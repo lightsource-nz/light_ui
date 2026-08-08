@@ -8,9 +8,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-// TODO implement version fields properly
-#define LIGHT_UI_VERSION_STR            "0.1.0"
-
 // longest label/title light_ui will render. labels are truncated to whatever fits the
 // widget anyway (see the fixed-pitch note below), so this only bounds the scratch buffer
 // the truncated copy is built in

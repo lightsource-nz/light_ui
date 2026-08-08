@@ -20,8 +20,12 @@ static void _draw_text_fitted(struct ui_context *ui, int16_t x, int16_t y,
                 return;
         // a glyph row is drawn from its top-left corner downward and rightward, and there
         // is no partial-glyph path -- so anything that doesn't start on-canvas, or whose
-        // full height doesn't fit, is dropped rather than half-drawn
-        if(x < 0 || y < 0 || y + font->char_height > (int16_t)ui->render->dim_y)
+        // full height doesn't fit, is dropped rather than half-drawn. the x >= dim_x half
+        // of that also has to be rejected before the fit_canvas division below, where a
+        // non-positive remaining width would wrap into a huge size_t and defeat the very
+        // truncation it is there to compute
+        if(x < 0 || y < 0 || x >= (int16_t)ui->render->dim_x
+                        || y + font->char_height > (int16_t)ui->render->dim_y)
                 return;
 
         size_t len = strlen((const char *)text);
