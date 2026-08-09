@@ -10,24 +10,11 @@ void light_ui_init()
         light_trace("");
 }
 
-void _ui_rect_union(struct ui_rect *box, const struct ui_rect *add)
-{
-        if(_ui_rect_empty(add))
-                return;
-        if(_ui_rect_empty(box)) {
-                *box = *add;
-                return;
-        }
-        if(add->x0 < box->x0) box->x0 = add->x0;
-        if(add->y0 < box->y0) box->y0 = add->y0;
-        if(add->x1 > box->x1) box->x1 = add->x1;
-        if(add->y1 > box->y1) box->y1 = add->y1;
-}
-
 bool _ui_clip_to_canvas(const struct ui_context *ui, struct ui_rect *r)
 {
-        int16_t max_x = (int16_t)ui->render->dim_x - 1;
-        int16_t max_y = (int16_t)ui->render->dim_y - 1;
+        const struct rend_context *render = _ui_render(ui);
+        int16_t max_x = (int16_t)render->dim_x - 1;
+        int16_t max_y = (int16_t)render->dim_y - 1;
 
         if(r->x0 < 0) r->x0 = 0;
         if(r->y0 < 0) r->y0 = 0;
@@ -36,24 +23,16 @@ bool _ui_clip_to_canvas(const struct ui_context *ui, struct ui_rect *r)
         return !_ui_rect_empty(r);
 }
 
-// an empty box in the "nothing accumulated yet" sense -- _ui_rect_union() replaces one of
-// these outright rather than growing it
-static const struct ui_rect _rect_none = { .x0 = 1, .y0 = 1, .x1 = 0, .y1 = 0 };
-
-struct ui_context *light_ui_create_context(struct rend_context *render,
-                                        struct display_device **display, uint8_t display_count)
+struct ui_context *light_ui_create_context(struct canvas_context *canvas)
 {
         struct ui_context *ui = light_alloc(sizeof(struct ui_context));
-        ui->render = render;
-        ui->display = display;
-        ui->display_count = display_count;
+        ui->canvas = canvas;
         ui->root = NULL;
         ui->focused = NULL;
         ui->dirty = false;
-        ui->dirty_box = _rect_none;
-        if(!render->font)
+        if(!canvas->render->font)
                 light_warn("render context '%s' has no font -- widget labels will not render",
-                                render->name);
+                                canvas->render->name);
         return ui;
 }
 
@@ -151,8 +130,8 @@ void light_ui_window_layout_stack(struct ui_window *win, uint8_t gap)
         content.y1 -= inset;
 
         // a titled window loses the title row plus its separator line to the header
-        if(win->title && win->widget.ui->render->font)
-                content.y0 += win->widget.ui->render->font->char_height + 2;
+        if(win->title && _ui_render(win->widget.ui)->font)
+                content.y0 += _ui_render(win->widget.ui)->font->char_height + 2;
 
         uint16_t count = 0;
         for(struct ui_widget *c = win->widget.first_child; c; c = c->next_sibling) {
@@ -188,15 +167,14 @@ void light_ui_window_layout_stack(struct ui_window *win, uint8_t gap)
 
 void light_ui_invalidate_widget(struct ui_widget *w)
 {
-        _ui_rect_union(&w->ui->dirty_box, &w->rect);
+        light_canvas_invalidate_rect(w->ui->canvas, (struct canvas_region) {
+                w->rect.x0, w->rect.y0, w->rect.x1, w->rect.y1 });
         w->ui->dirty = true;
 }
 
 void light_ui_invalidate(struct ui_context *ui)
 {
-        ui->dirty_box = (struct ui_rect) {
-                0, 0, (int16_t)ui->render->dim_x - 1, (int16_t)ui->render->dim_y - 1
-        };
+        light_canvas_invalidate_all(ui->canvas);
         ui->dirty = true;
 }
 
@@ -338,34 +316,18 @@ void light_ui_label_set_text(struct ui_label *lbl, const uint8_t *text)
 
 // --- render ---
 
-static void _push_region(struct ui_context *ui, struct ui_rect r)
-{
-        if(!_ui_clip_to_canvas(ui, &r))
-                return;
-        for(uint8_t i = 0; i < ui->display_count; i++) {
-                if(!ui->display[i])
-                        continue;
-                light_display_command_update_region_async(ui->display[i],
-                        (rend_point2d) { (uint16_t)r.x0, (uint16_t)r.y0 },
-                        (rend_point2d) { (uint16_t)r.x1, (uint16_t)r.y1 });
-        }
-}
-
 void light_ui_render(struct ui_context *ui)
 {
         if(!ui->dirty || !ui->root)
                 return;
-        // the buffer about to be swapped into is the one a previous update may still be
-        // reading. skip this frame rather than draw over an in-flight DMA transfer -- the
-        // dirty flag survives, so the repaint simply happens on the next call
-        if(light_display_render_context_busy(ui->render))
+        // the canvas decides whether a frame happens at all: it owns the frame deadline and
+        // the check for a display still reading the buffer. on false the dirty flag and the
+        // accumulated regions both survive, so the repaint simply happens on a later tick
+        if(!light_canvas_frame_begin(ui->canvas))
                 return;
 
-        rend_context_swap_buffers(ui->render);
-        rend_draw_clear(ui->render);
         _ui_paint_widget(ui, ui->root);
 
-        _push_region(ui, ui->dirty_box);
-        ui->dirty_box = _rect_none;
+        light_canvas_frame_end(ui->canvas);
         ui->dirty = false;
 }

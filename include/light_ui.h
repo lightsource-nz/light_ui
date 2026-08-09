@@ -2,6 +2,7 @@
 #define _LIGHT_UI_H
 
 #include <light.h>
+#include <light_canvas.h>
 #include <light_display.h>
 #include <rend.h>
 
@@ -76,19 +77,17 @@ struct ui_label {
 };
 
 struct ui_context {
-        struct rend_context *render;
-        // displays this UI is pushed to. the array is borrowed, not copied -- callers pass
-        // the same static array they hand light_display_set_render_context()
-        struct display_device **display;
-        uint8_t display_count;
+        // owns the render context, the displays it is presented on, frame pacing, buffer
+        // swapping and dirty-region flushing. light_ui contributes only the widget tree and
+        // which parts of it changed
+        struct canvas_context *canvas;
         struct ui_widget *root;
         struct ui_widget *focused;
 
-        // set by any invalidation, cleared once the repaint has been pushed
+        // set by any invalidation, cleared once the repaint has been pushed. distinct from
+        // the canvas's own region list: this answers "is there anything to draw", which
+        // decides whether to open a frame at all
         bool dirty;
-        // union of every rect invalidated since the last push. the whole tree is repainted
-        // regardless (see light_ui_render()); this bounds only what gets sent to the panel
-        struct ui_rect dirty_box;
 };
 
 #define to_ui_window(ptr) container_of(ptr, struct ui_window, widget)
@@ -97,11 +96,10 @@ struct ui_context {
 
 extern void light_ui_init();
 
-// binds a UI to the context it draws through and the displays it pushes to. the render
-// context must already have a font set (rend_context_set_font()) -- rend_draw_text() is a
-// silent no-op without one, so an unfonted context renders frames with no labels in them
-extern struct ui_context *light_ui_create_context(struct rend_context *render,
-                                                struct display_device **display, uint8_t display_count);
+// binds a UI to the canvas it is presented through. the canvas's render context must
+// already have a font set (rend_context_set_font()) -- rend_draw_text() is a silent no-op
+// without one, so an unfonted context renders frames with no labels in them
+extern struct ui_context *light_ui_create_context(struct canvas_context *canvas);
 
 // parent may be NULL for the root widget. rect is absolute (see struct ui_widget)
 extern struct ui_window *light_ui_window_create(struct ui_context *ui, struct ui_widget *parent,
@@ -154,19 +152,15 @@ extern void light_ui_invalidate_widget(struct ui_widget *w);
 // on the panel matches the (empty) tree yet
 extern void light_ui_invalidate(struct ui_context *ui);
 
-// repaints and pushes, if anything is dirty. call once per frame from the application's
-// periodic task.
+// repaints and pushes, if anything is dirty. call every tick from the application's
+// periodic task -- the canvas's own frame pacing decides when a frame actually happens, and
+// this is a no-op on the ticks in between.
 //
-// the ENTIRE tree is repainted, not just the dirty widgets. a retained UI only changes on
-// input, so the repaint runs a handful of times per second at most -- and painting
-// everything sidesteps incremental redraw's hard case, which is that the buffer being
-// painted into is two frames stale under double-buffering and so cannot be patched in
-// place. only the pushed REGION is optimised, which is where the cost that actually scales
-// with panel size lives (1KB for a 1bpp OLED, 134KB for a 240x280 RGB565 panel).
-//
-// returns without doing anything if a previous update is still reading the render context,
-// so a display that can't keep up skips frames rather than tearing -- the same gate
-// screen-test's circle demo uses (light_display_render_context_busy())
+// the ENTIRE tree is repainted, not just the dirty widgets, because light_canvas clears the
+// buffer at the start of every frame (see light_canvas_frame_begin()). a retained UI only
+// changes on input, so this runs a handful of times per second at most, and only the pushed
+// REGION is optimised -- which is where the cost that actually scales with panel size lives
+// (1KB for a 1bpp OLED, 134KB for a 240x280 RGB565 panel)
 extern void light_ui_render(struct ui_context *ui);
 
 #endif

@@ -15,7 +15,8 @@
 static void _draw_text_fitted(struct ui_context *ui, int16_t x, int16_t y,
                                 const uint8_t *text, int16_t max_width)
 {
-        const rend_font_t *font = ui->render->font;
+        rend_context_t *render = _ui_render(ui);
+        const rend_font_t *font = render->font;
         if(!font || !text || !font->char_width)
                 return;
         // a glyph row is drawn from its top-left corner downward and rightward, and there
@@ -24,13 +25,13 @@ static void _draw_text_fitted(struct ui_context *ui, int16_t x, int16_t y,
         // of that also has to be rejected before the fit_canvas division below, where a
         // non-positive remaining width would wrap into a huge size_t and defeat the very
         // truncation it is there to compute
-        if(x < 0 || y < 0 || x >= (int16_t)ui->render->dim_x
-                        || y + font->char_height > (int16_t)ui->render->dim_y)
+        if(x < 0 || y < 0 || x >= (int16_t)render->dim_x
+                        || y + font->char_height > (int16_t)render->dim_y)
                 return;
 
         size_t len = strlen((const char *)text);
         size_t fit_widget = (size_t)(max_width > 0 ? max_width : 0) / font->char_width;
-        size_t fit_canvas = (size_t)((int16_t)ui->render->dim_x - x) / font->char_width;
+        size_t fit_canvas = (size_t)((int16_t)render->dim_x - x) / font->char_width;
         if(len > fit_widget) len = fit_widget;
         if(len > fit_canvas) len = fit_canvas;
         if(len > LIGHT_UI_TEXT_MAX - 1) len = LIGHT_UI_TEXT_MAX - 1;
@@ -40,7 +41,7 @@ static void _draw_text_fitted(struct ui_context *ui, int16_t x, int16_t y,
         uint8_t buf[LIGHT_UI_TEXT_MAX];
         memcpy(buf, text, len);
         buf[len] = '\0';
-        rend_draw_text(ui->render, (rend_point2d) { (uint16_t)x, (uint16_t)y }, buf);
+        rend_draw_text(render, (rend_point2d) { (uint16_t)x, (uint16_t)y }, buf);
 }
 
 // horizontally centres a string of `len` glyphs within [x0, x1], never left of x0
@@ -59,12 +60,13 @@ static void _paint_window(struct ui_context *ui, struct ui_window *win)
         if(!_ui_clip_to_canvas(ui, &r))
                 return;
 
+        rend_context_t *render = _ui_render(ui);
         if(win->border)
-                rend_draw_rect(ui->render,
+                rend_draw_rect(render,
                         (rend_point2d) { (uint16_t)r.x0, (uint16_t)r.y0 },
                         (rend_point2d) { (uint16_t)r.x1, (uint16_t)r.y1 }, false);
 
-        const rend_font_t *font = ui->render->font;
+        const rend_font_t *font = render->font;
         if(!win->title || !font)
                 return;
 
@@ -78,7 +80,7 @@ static void _paint_window(struct ui_context *ui, struct ui_window *win)
 
         int16_t sep_y = ty + font->char_height;
         if(sep_y <= r.y1 && sep_y >= 0)
-                rend_draw_line(ui->render,
+                rend_draw_line(render,
                         (rend_point2d) { (uint16_t)(r.x0 + inset), (uint16_t)sep_y },
                         (rend_point2d) { (uint16_t)(r.x1 - inset), (uint16_t)sep_y }, true);
 }
@@ -89,7 +91,7 @@ static void _paint_button(struct ui_context *ui, struct ui_button *btn)
         if(!_ui_clip_to_canvas(ui, &r))
                 return;
 
-        rend_context_t *render = ui->render;
+        rend_context_t *render = _ui_render(ui);
         bool focused = ui->focused == &btn->widget;
 
         rend_point2d p0 = { (uint16_t)r.x0, (uint16_t)r.y0 };

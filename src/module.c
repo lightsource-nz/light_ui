@@ -1,14 +1,16 @@
 #include <light_ui.h>
+#include <module/mod_light_canvas.h>
 #include <module/mod_light_display.h>
 
 #include "light_ui_internal.h"
 
 static void _module_event(const struct light_module *module, uint8_t event, void *arg);
 // no light_touch/light_button dependency by design -- see the input section of light_ui.h.
-// rend and light_display ARE dependencies: light_ui draws through one and pushes through
-// the other, and needs both loaded before any context can be created
+// light_canvas IS one: light_ui presents every frame through it, and needs it loaded before
+// any context can be created. light_display comes along behind it
 Light_Module_Define(light_ui, _module_event,
                                 &rend,
+                                &light_canvas,
                                 &light_display,
                                 &light_core);
 

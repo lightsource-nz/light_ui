@@ -13,9 +13,13 @@ extern void _ui_paint_widget(struct ui_context *ui, struct ui_widget *w);
 // survives, which is the caller's cue to skip the widget entirely
 extern bool _ui_clip_to_canvas(const struct ui_context *ui, struct ui_rect *r);
 
-// grows *box to cover *add. an invalid (empty) box is replaced outright rather than grown,
-// so callers can start from a zeroed struct
-extern void _ui_rect_union(struct ui_rect *box, const struct ui_rect *add);
+// the render context light_ui draws through. reached via the canvas rather than held
+// directly, so there is one owner of it -- this exists only to keep the chain from being
+// spelled out at every use site in ui_draw.c
+static inline struct rend_context *_ui_render(const struct ui_context *ui)
+{
+        return ui->canvas->render;
+}
 
 static inline bool _ui_rect_empty(const struct ui_rect *r)
 {
