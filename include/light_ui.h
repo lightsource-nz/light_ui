@@ -18,6 +18,12 @@
 #define UI_WIDGET_BUTTON                1
 #define UI_WIDGET_LABEL                 2
 
+// how a window arranges its children when layout is (re-)run. recorded on the window rather
+// than passed in each time, so a rotation or resize can re-apply it without the application
+// having to be told to lay everything out again
+#define UI_LAYOUT_NONE                  0
+#define UI_LAYOUT_STACK                 1
+
 // an inclusive rectangle in LOGICAL rend coordinates -- the same space the caller draws in
 // (post-rotation, see rend_context_set_rotation()), never the physical buffer's.
 //
@@ -62,6 +68,11 @@ struct ui_window {
         // light_ui_window_layout_stack() divides up
         uint8_t padding;
         bool border;
+        // the arrangement to re-apply on light_ui_relayout(), and its parameter. set by
+        // whichever light_ui_window_layout_*() call was last used; UI_LAYOUT_NONE for a
+        // window whose children were placed by hand
+        uint8_t layout;
+        uint8_t layout_gap;
 };
 
 struct ui_button {
@@ -119,6 +130,30 @@ extern struct ui_label *light_ui_label_create(struct ui_context *ui, struct ui_w
 // order, and "next" means the row below
 extern void light_ui_window_layout_stack(struct ui_window *win, uint8_t gap);
 
+// re-runs layout against the canvas as it is NOW: the root widget is resized to fill it,
+// then every window re-applies the arrangement it recorded. a UI_LAYOUT_NONE window's
+// children are left exactly where they are, because light_ui has no idea what hand-placed
+// rects were meant to express.
+//
+// called for you by light_ui_set_rotation(); public because a canvas can change size for
+// other reasons
+extern void light_ui_relayout(struct ui_context *ui);
+
+// rotates the whole interface (a REND_ROTATE_* value), so it can be kept upright as the
+// device is turned. a no-op if the rotation is unchanged; otherwise it re-lays-out (the
+// canvas aspect has just flipped) and invalidates everything.
+//
+// safe between frames precisely because light_canvas clears and fully repaints every frame,
+// so rend's usual "set rotation once, before any drawing" caveat does not apply -- there is
+// no stale buffer content left to be transformed. do NOT call it from inside a frame, i.e.
+// between light_canvas_frame_begin() and frame_end().
+//
+// light_ui deliberately knows nothing about orientation SENSORS: an application maps its own
+// IMU_ORIENT_* (or anything else) onto a rotation, the same way it maps its own touch and
+// button hardware onto the input calls below. that mapping depends on whether the panel is
+// natively portrait or landscape, which is a board fact, not a UI one
+extern void light_ui_set_rotation(struct ui_context *ui, uint8_t rotation);
+
 // --- input ---
 // deliberately hardware-free: light_ui depends on neither light_touch nor light_button, so
 // it builds and can be exercised on a host with no device modules present at all. each
@@ -132,11 +167,18 @@ extern void light_ui_input_activate(struct ui_context *ui);
 // activates it -- a touch is a complete interaction, not just a focus move. returns whether
 // anything was hit.
 //
-// x/y are LOGICAL rend coordinates. light_touch reports in its device's own (physical
-// panel) space, so a caller whose render context is rotated must map them first; light_ui
-// has no way to invert rend's transform today. neither bring-up rig needs it
-// (ws_touch169 is REND_ROTATE_0, and the rotated po13 has no touch panel), so the inverse
-// belongs in rend alongside rend_transform_rect() whenever a rotated touch device appears
+// x/y are PANEL coordinates, i.e. the display's own physical frame, which is exactly what a
+// touch controller reports -- pass them through unmodified. light_ui untransforms them into
+// the logical space the widgets live in (rend_untransform_point()), which it can do and the
+// caller cannot, since light_ui owns the render context and therefore the rotation.
+//
+// this took logical coordinates before rotation existed, which was indistinguishable from
+// panel coordinates only because every rig ran REND_ROTATE_0. under rotation the two differ,
+// and getting it wrong sends taps to the wrong widget -- so the conversion lives here rather
+// than being a rule each application has to remember.
+//
+// the assumption is that the touch panel is aligned with the display and reports over the
+// same coordinate range; where it isn't, scale before calling
 extern bool light_ui_input_press_at(struct ui_context *ui, uint16_t x, uint16_t y);
 
 extern void light_ui_set_focus(struct ui_context *ui, struct ui_widget *w);

@@ -73,6 +73,10 @@ struct ui_window *light_ui_window_create(struct ui_context *ui, struct ui_widget
         win->title = title;
         win->padding = 2;
         win->border = true;
+        // hand-placed until a layout call says otherwise, so relayout leaves its children
+        // alone rather than rearranging rects somebody chose deliberately
+        win->layout = UI_LAYOUT_NONE;
+        win->layout_gap = 0;
         _widget_init(&win->widget, ui, parent, UI_WIDGET_WINDOW, rect, false);
         return win;
 }
@@ -121,6 +125,11 @@ static struct ui_widget *_tree_next(struct ui_widget *w, struct ui_widget *root)
 
 void light_ui_window_layout_stack(struct ui_window *win, uint8_t gap)
 {
+        // recorded before it is applied, so light_ui_relayout() can re-run exactly this
+        // arrangement later without the application being asked to do it again
+        win->layout = UI_LAYOUT_STACK;
+        win->layout_gap = gap;
+
         struct ui_rect content = win->widget.rect;
         // the frame itself occupies the outermost pixel ring, so content starts inside it
         int16_t inset = (int16_t)win->padding + (win->border ? 1 : 0);
@@ -161,6 +170,46 @@ void light_ui_window_layout_stack(struct ui_window *win, uint8_t gap)
                 y = (int16_t)(y + row_h + gap);
         }
         light_ui_invalidate_widget(&win->widget);
+}
+
+void light_ui_relayout(struct ui_context *ui)
+{
+        if(!ui->root)
+                return;
+
+        // the root is resized to whatever the canvas is now -- which is the whole point,
+        // since a rotation swaps dim_x and dim_y and leaves every absolute rect describing
+        // a canvas that no longer exists
+        const struct rend_context *render = _ui_render(ui);
+        ui->root->rect = (struct ui_rect) {
+                0, 0, (int16_t)render->dim_x - 1, (int16_t)render->dim_y - 1
+        };
+
+        // pre-order, so a window is resized by its parent's layout before it lays out its
+        // own children against that new rect -- the other order would have every nested
+        // window arranging itself inside its previous, stale bounds
+        for(struct ui_widget *w = ui->root; w; w = _tree_next(w, ui->root)) {
+                if(w->type != UI_WIDGET_WINDOW)
+                        continue;
+                struct ui_window *win = to_ui_window(w);
+                if(win->layout == UI_LAYOUT_STACK)
+                        light_ui_window_layout_stack(win, win->layout_gap);
+        }
+}
+
+void light_ui_set_rotation(struct ui_context *ui, uint8_t rotation)
+{
+        struct rend_context *render = _ui_render(ui);
+        if(render->rotation == rotation)
+                return;
+
+        rend_context_set_rotation(render, rotation);
+        light_ui_relayout(ui);
+        // everything moved, and the panel still shows the old arrangement in the old
+        // orientation -- nothing short of the whole canvas is a safe region to push
+        light_ui_invalidate(ui);
+        light_debug("ui rotation now %d, canvas %dx%d",
+                        rotation, render->dim_x, render->dim_y);
 }
 
 // --- invalidation ---
@@ -259,6 +308,13 @@ void light_ui_input_activate(struct ui_context *ui)
 
 bool light_ui_input_press_at(struct ui_context *ui, uint16_t x, uint16_t y)
 {
+        // the caller hands us the panel's own coordinates; widgets live in logical space,
+        // and under rotation those are different points. doing this here rather than in
+        // every application is the whole reason light_ui owns the render context
+        rend_point2d logical = rend_untransform_point(_ui_render(ui), (rend_point2d) { x, y });
+        x = logical.x;
+        y = logical.y;
+
         struct ui_widget *hit = NULL;
         // last match wins: pre-order means deeper and later-drawn widgets are visited last,
         // and those are the ones actually on top where they overlap
