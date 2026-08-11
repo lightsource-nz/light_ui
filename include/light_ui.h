@@ -9,6 +9,11 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+// how long a rotation takes to animate. long enough to read as a turn rather than a glitch,
+// short enough not to feel like waiting -- and the panel is unresponsive to nothing during
+// it, since input is still collected, only the drawing is given over to the animation
+#define LIGHT_UI_ROTATE_MS              280
+
 // longest label/title light_ui will render. labels are truncated to whatever fits the
 // widget anyway (see the fixed-pitch note below), so this only bounds the scratch buffer
 // the truncated copy is built in
@@ -99,6 +104,16 @@ struct ui_context {
         // the canvas's own region list: this answers "is there anything to draw", which
         // decides whether to open a frame at all
         bool dirty;
+
+        // --- rotation animation, driven from light_ui_render() ---
+        // while active, frames show the pre-rotation image turning rather than the widget
+        // tree; the real rotation is applied once, on the final step
+        bool rotating;
+        uint8_t rotate_target;
+        // total turn in degrees, signed: the shortest route between the two quadrants
+        int16_t rotate_degrees;
+        uint32_t rotate_start_ms;
+        uint16_t rotate_duration_ms;
 };
 
 #define to_ui_window(ptr) container_of(ptr, struct ui_window, widget)

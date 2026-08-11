@@ -1,6 +1,9 @@
 #include <light_ui.h>
+#include <light_platform.h>
 
 #include "light_ui_internal.h"
+
+#include <string.h>
 
 void light_ui_init()
 {
@@ -30,6 +33,11 @@ struct ui_context *light_ui_create_context(struct canvas_context *canvas)
         ui->root = NULL;
         ui->focused = NULL;
         ui->dirty = false;
+        ui->rotating = false;
+        ui->rotate_target = canvas->render->rotation;
+        ui->rotate_degrees = 0;
+        ui->rotate_start_ms = 0;
+        ui->rotate_duration_ms = LIGHT_UI_ROTATE_MS;
         if(!canvas->render->font)
                 light_warn("render context '%s' has no font -- widget labels will not render",
                                 canvas->render->name);
@@ -197,11 +205,11 @@ void light_ui_relayout(struct ui_context *ui)
         }
 }
 
-void light_ui_set_rotation(struct ui_context *ui, uint8_t rotation)
+// applies a rotation for real: swaps the canvas dimensions, drops regions measured against
+// the old ones, re-lays-out and repaints everything
+static void _commit_rotation(struct ui_context *ui, uint8_t rotation)
 {
         struct rend_context *render = _ui_render(ui);
-        if(render->rotation == rotation)
-                return;
 
         rend_context_set_rotation(render, rotation);
         // regions accumulated before this point were measured against a canvas whose
@@ -214,6 +222,50 @@ void light_ui_set_rotation(struct ui_context *ui, uint8_t rotation)
         light_ui_invalidate(ui);
         light_debug("ui rotation now %d, canvas %dx%d",
                         rotation, render->dim_x, render->dim_y);
+}
+
+// the shortest signed turn between two REND_ROTATE_* quadrants, in degrees: -90, 0, +90 or
+// 180. going the long way round would animate three quarters of a turn to reach a
+// neighbouring orientation
+static int16_t _rotation_delta_degrees(uint8_t from, uint8_t to)
+{
+        int16_t quadrants = (int16_t)((to + 4 - from) % 4);
+        if(quadrants == 3)
+                quadrants = -1;
+        return (int16_t)(quadrants * 90);
+}
+
+void light_ui_set_rotation(struct ui_context *ui, uint8_t rotation)
+{
+        struct rend_context *render = _ui_render(ui);
+        // compared against the target rather than the live rotation: mid-animation the live
+        // one is still the OLD value, so without this a repeated orientation report would
+        // restart the turn on every tick
+        if(ui->rotate_target == rotation && (ui->rotating || render->rotation == rotation))
+                return;
+
+        // the animation reads the pre-rotation image out of the back buffer while drawing
+        // into the front one. with no second buffer there is nowhere to hold it, so fall
+        // back to what this used to do -- a correct snap beats a broken animation
+        if(!render->buffer_back) {
+                _commit_rotation(ui, rotation);
+                ui->rotate_target = rotation;
+                return;
+        }
+
+        // one copy of the current frame into the back buffer, then swapping is suspended so
+        // it stays put for the duration. a memcpy of a frame costs a fraction of the
+        // transfer that pushes it, and it avoids having to reason about swap ordering
+        // against an update that may still be in flight
+        memcpy(render->buffer_back, render->buffer, render->buffer_length);
+        light_canvas_set_double_buffer(ui->canvas, false);
+
+        ui->rotating = true;
+        ui->rotate_target = rotation;
+        ui->rotate_degrees = _rotation_delta_degrees(render->rotation, rotation);
+        ui->rotate_start_ms = light_platform_get_time_since_init();
+        ui->dirty = true;
+        light_debug("ui rotating %d degrees to %d", ui->rotate_degrees, rotation);
 }
 
 // --- invalidation ---
@@ -376,8 +428,53 @@ void light_ui_label_set_text(struct ui_label *lbl, const uint8_t *text)
 
 // --- render ---
 
+// draws one step of the rotation animation. returns true once the turn has finished and the
+// real rotation has been applied, so the caller knows an ordinary repaint is due
+static bool _render_rotation_step(struct ui_context *ui)
+{
+        struct rend_context *render = _ui_render(ui);
+        uint32_t elapsed = light_platform_get_time_since_init() - ui->rotate_start_ms;
+        bool final = elapsed >= ui->rotate_duration_ms;
+
+        if(!final) {
+                if(!light_canvas_frame_begin(ui->canvas))
+                        return false;
+
+                // linear in time. an eased curve would look nicer, but at roughly ten frames
+                // for the whole turn the difference is below what the eye can pick out, and
+                // linear keeps the angle trivially predictable when checking it on hardware
+                int16_t angle = (int16_t)(((int32_t)ui->rotate_degrees * (int32_t)elapsed)
+                                / (int32_t)ui->rotate_duration_ms);
+                // shrink to whatever still fits: a rectangle turned off-axis needs a bigger
+                // box than the one it came from, so at 1:1 the corners would be sliced off
+                // for most of the turn
+                rend_blit_rotated(render, render->buffer_back,
+                                angle, rend_scale_inscribed(render, angle));
+
+                light_canvas_invalidate_all(ui->canvas);
+                light_canvas_frame_end(ui->canvas);
+                return false;
+        }
+
+        // the turn is over: put swapping back before committing, so the repaint that follows
+        // runs against a normal double-buffered canvas again
+        light_canvas_set_double_buffer(ui->canvas, true);
+        ui->rotating = false;
+        _commit_rotation(ui, ui->rotate_target);
+        return true;
+}
+
 void light_ui_render(struct ui_context *ui)
 {
+        if(ui->rotating) {
+                // the animation owns the frame while it runs -- the widget tree is not drawn
+                // at all, only the image of it captured before the turn began
+                if(!_render_rotation_step(ui))
+                        return;
+                // fell through on the final step, which committed the rotation and marked
+                // everything dirty; draw the real layout below rather than waiting a tick
+        }
+
         if(!ui->dirty || !ui->root)
                 return;
         // the canvas decides whether a frame happens at all: it owns the frame deadline and
