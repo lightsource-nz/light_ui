@@ -204,6 +204,10 @@ void light_ui_set_rotation(struct ui_context *ui, uint8_t rotation)
                 return;
 
         rend_context_set_rotation(render, rotation);
+        // regions accumulated before this point were measured against a canvas whose
+        // dimensions have just swapped, so they describe nothing meaningful now -- drop them
+        // rather than let them be carried into the next push
+        light_canvas_reset_regions(ui->canvas);
         light_ui_relayout(ui);
         // everything moved, and the panel still shows the old arrangement in the old
         // orientation -- nothing short of the whole canvas is a safe region to push
