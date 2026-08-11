@@ -73,6 +73,9 @@ struct ui_window {
         // light_ui_window_layout_stack() divides up
         uint8_t padding;
         bool border;
+        // 0 for a square frame. non-zero draws the border as a rounded rectangle and keeps
+        // content clear of the curve -- see light_ui_window_set_corner_radius()
+        uint8_t corner_radius;
         // the arrangement to re-apply on light_ui_relayout(), and its parameter. set by
         // whichever light_ui_window_layout_*() call was last used; UI_LAYOUT_NONE for a
         // window whose children were placed by hand
@@ -148,6 +151,19 @@ extern struct ui_label *light_ui_label_create(struct ui_context *ui, struct ui_w
 // natural companion to focus-cycling navigation: a vertical stack has an obvious visual
 // order, and "next" means the row below
 extern void light_ui_window_layout_stack(struct ui_window *win, uint8_t gap);
+
+// rounds the window's frame, and keeps its content clear of the curve. meant for a root
+// window drawn at the edge of glass that is itself rounded: the frame then follows the panel
+// instead of floating in a square inside it, which is the band a uniform safe inset costs.
+//
+// the clearance this buys is NOT uniform, and that is the whole subtlety. a corner only eats
+// into the rows within `radius` of the top and bottom edges; below that the left edge is back
+// at x0. so content is pushed down and up by the radius, while the horizontal inset stays at
+// border+padding -- pushing it in by the radius on all four sides would give back exactly the
+// width this was supposed to recover.
+//
+// re-lays-out the window, since its content area has just changed
+extern void light_ui_window_set_corner_radius(struct ui_window *win, uint8_t radius);
 
 // re-runs layout against the canvas as it is NOW: the root widget is resized to fill it,
 // then every window re-applies the arrangement it recorded. a UI_LAYOUT_NONE window's

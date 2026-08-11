@@ -61,10 +61,17 @@ static void _paint_window(struct ui_context *ui, struct ui_window *win)
                 return;
 
         rend_context_t *render = _ui_render(ui);
-        if(win->border)
-                rend_draw_rect(render,
-                        (rend_point2d) { (uint16_t)r.x0, (uint16_t)r.y0 },
-                        (rend_point2d) { (uint16_t)r.x1, (uint16_t)r.y1 }, false);
+        if(win->border) {
+                if(win->corner_radius)
+                        rend_draw_rect_rounded(render,
+                                (rend_point2d) { (uint16_t)r.x0, (uint16_t)r.y0 },
+                                (rend_point2d) { (uint16_t)r.x1, (uint16_t)r.y1 },
+                                win->corner_radius, false);
+                else
+                        rend_draw_rect(render,
+                                (rend_point2d) { (uint16_t)r.x0, (uint16_t)r.y0 },
+                                (rend_point2d) { (uint16_t)r.x1, (uint16_t)r.y1 }, false);
+        }
 
         const rend_font_t *font = render->font;
         if(!win->title || !font)
@@ -72,10 +79,16 @@ static void _paint_window(struct ui_context *ui, struct ui_window *win)
 
         // title sits just inside the frame, with a separator line under it -- the same
         // header band light_ui_window_layout_stack() subtracts from the content area, so
-        // the two must agree on its height (char_height + 2)
+        // the two must agree on its height (char_height + 2) AND on where it starts.
+        //
+        // the vertical start goes through the shared helper because of the corners: at
+        // r.y0 + 1 the frame's left edge has not yet come back out to r.x0, so a title placed
+        // there has its first characters swallowed by the curve. that is precisely the bug
+        // rounded frames were added to fix, and putting it back here by hand would reintroduce
+        // it on the one widget most likely to show it
         int16_t inset = win->border ? 1 : 0;
         int16_t tx = r.x0 + inset + 1;
-        int16_t ty = r.y0 + inset;
+        int16_t ty = r.y0 + _ui_window_inset_y(win, inset);
         _draw_text_fitted(ui, tx, ty, win->title, r.x1 - inset - tx + 1);
 
         int16_t sep_y = ty + font->char_height;

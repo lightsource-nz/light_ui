@@ -82,6 +82,7 @@ struct ui_window *light_ui_window_create(struct ui_context *ui, struct ui_widget
         win->title = title;
         win->padding = 2;
         win->border = true;
+        win->corner_radius = 0;
         // hand-placed until a layout call says otherwise, so relayout leaves its children
         // alone rather than rearranging rects somebody chose deliberately
         win->layout = UI_LAYOUT_NONE;
@@ -140,12 +141,15 @@ void light_ui_window_layout_stack(struct ui_window *win, uint8_t gap)
         win->layout_gap = gap;
 
         struct ui_rect content = win->widget.rect;
-        // the frame itself occupies the outermost pixel ring, so content starts inside it
-        int16_t inset = (int16_t)win->padding + (win->border ? 1 : 0);
-        content.x0 += inset;
-        content.y0 += inset;
-        content.x1 -= inset;
-        content.y1 -= inset;
+        // the frame itself occupies the outermost pixel ring, so content starts inside it --
+        // and by more than that vertically once the corners are rounded (see
+        // _ui_window_inset_y())
+        int16_t inset_x = _ui_window_inset_x(win);
+        int16_t inset_y = _ui_window_inset_y(win, inset_x);
+        content.x0 += inset_x;
+        content.y0 += inset_y;
+        content.x1 -= inset_x;
+        content.y1 -= inset_y;
 
         // a titled window loses the title row plus its separator line to the header
         if(win->title && _ui_render(win->widget.ui)->font)
@@ -178,6 +182,19 @@ void light_ui_window_layout_stack(struct ui_window *win, uint8_t gap)
                 c->rect.y1 = (int16_t)(y + row_h - 1);
                 y = (int16_t)(y + row_h + gap);
         }
+        light_ui_invalidate_widget(&win->widget);
+}
+
+void light_ui_window_set_corner_radius(struct ui_window *win, uint8_t radius)
+{
+        if(win->corner_radius == radius)
+                return;
+        win->corner_radius = radius;
+        // the content area just changed height, so any recorded arrangement has to be
+        // re-applied against it -- a window whose children were hand-placed is left alone,
+        // on the same terms as light_ui_relayout()
+        if(win->layout == UI_LAYOUT_STACK)
+                light_ui_window_layout_stack(win, win->layout_gap);
         light_ui_invalidate_widget(&win->widget);
 }
 
