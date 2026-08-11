@@ -38,6 +38,7 @@ struct ui_context *light_ui_create_context(struct canvas_context *canvas)
         ui->rotate_degrees = 0;
         ui->rotate_start_ms = 0;
         ui->rotate_duration_ms = LIGHT_UI_ROTATE_MS;
+        ui->safe_inset = 0;
         if(!canvas->render->font)
                 light_warn("render context '%s' has no font -- widget labels will not render",
                                 canvas->render->name);
@@ -180,6 +181,15 @@ void light_ui_window_layout_stack(struct ui_window *win, uint8_t gap)
         light_ui_invalidate_widget(&win->widget);
 }
 
+void light_ui_set_safe_inset(struct ui_context *ui, uint8_t inset)
+{
+        if(ui->safe_inset == inset)
+                return;
+        ui->safe_inset = inset;
+        light_ui_relayout(ui);
+        light_ui_invalidate(ui);
+}
+
 void light_ui_relayout(struct ui_context *ui)
 {
         if(!ui->root)
@@ -187,10 +197,13 @@ void light_ui_relayout(struct ui_context *ui)
 
         // the root is resized to whatever the canvas is now -- which is the whole point,
         // since a rotation swaps dim_x and dim_y and leaves every absolute rect describing
-        // a canvas that no longer exists
+        // a canvas that no longer exists. the safe inset comes off all four edges, so a
+        // panel that doesn't show its own corners never has content placed in them
         const struct rend_context *render = _ui_render(ui);
+        int16_t inset = (int16_t)ui->safe_inset;
         ui->root->rect = (struct ui_rect) {
-                0, 0, (int16_t)render->dim_x - 1, (int16_t)render->dim_y - 1
+                inset, inset,
+                (int16_t)render->dim_x - 1 - inset, (int16_t)render->dim_y - 1 - inset
         };
 
         // pre-order, so a window is resized by its parent's layout before it lays out its

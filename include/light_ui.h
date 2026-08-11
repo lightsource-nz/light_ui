@@ -105,6 +105,10 @@ struct ui_context {
         // decides whether to open a frame at all
         bool dirty;
 
+        // pixels kept clear on every edge, for panels whose glass does not show the whole
+        // pixel grid (see light_ui_set_safe_inset())
+        uint8_t safe_inset;
+
         // --- rotation animation, driven from light_ui_render() ---
         // while active, frames show the pre-rotation image turning rather than the widget
         // tree; the real rotation is applied once, on the final step
@@ -153,6 +157,21 @@ extern void light_ui_window_layout_stack(struct ui_window *win, uint8_t gap);
 // called for you by light_ui_set_rotation(); public because a canvas can change size for
 // other reasons
 extern void light_ui_relayout(struct ui_context *ui);
+
+// keeps `inset` pixels clear on every edge of the canvas, for a panel whose glass does not
+// actually show the whole pixel grid. rounded corners are the usual reason: the pixels are
+// addressable and get drawn, they are simply not visible, so content in a corner silently
+// disappears rather than failing in any way the code could notice.
+//
+// UNIFORM rather than per-edge, and that is not laziness: the interface rotates, so an inset
+// that differed between edges would be applied to the wrong ones the moment the board turned
+// -- the corners are fixed in the PANEL's frame while the insets would be expressed in the
+// logical one. a uniform inset is the only value invariant under rotation.
+//
+// set it to the corner radius. that costs a band of that width on all four sides, which is
+// the price of every corner being safe in every orientation. applied by light_ui_relayout(),
+// so it takes effect on the next layout
+extern void light_ui_set_safe_inset(struct ui_context *ui, uint8_t inset);
 
 // rotates the whole interface (a REND_ROTATE_* value), so it can be kept upright as the
 // device is turned. a no-op if the rotation is unchanged; otherwise it re-lays-out (the
