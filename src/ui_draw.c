@@ -77,25 +77,33 @@ static void _paint_window(struct ui_context *ui, struct ui_window *win)
         if(!win->title || !font)
                 return;
 
-        // title sits just inside the frame, with a separator line under it -- the same
-        // header band light_ui_window_layout_stack() subtracts from the content area, so
-        // the two must agree on its height (char_height + 2) AND on where it starts.
+        // title sits just inside the frame, at the very top, with a separator line under it --
+        // the same header band light_ui_window_layout_stack() reserves, so the two must agree
+        // on its height (char_height + 2) and on where it starts.
         //
-        // the vertical start goes through the shared helper because of the corners: at
-        // r.y0 + 1 the frame's left edge has not yet come back out to r.x0, so a title placed
-        // there has its first characters swallowed by the curve. that is precisely the bug
-        // rounded frames were added to fix, and putting it back here by hand would reintroduce
-        // it on the one widget most likely to show it
+        // a rounded corner is cleared SIDEWAYS here, not downward. the title is one short
+        // string, so shifting it right by however far the arc reaches in at its topmost row
+        // costs a few characters of a line that has room to spare, where dropping the header
+        // below the curve would cost a band the depth of the radius across the whole window.
+        // the indent is taken at the title's TOP row because that is where the arc is furthest
+        // in -- clearing that clears every row beneath it
         int16_t inset = win->border ? 1 : 0;
-        int16_t tx = r.x0 + inset + 1;
-        int16_t ty = r.y0 + _ui_window_inset_y(win, inset);
-        _draw_text_fitted(ui, tx, ty, win->title, r.x1 - inset - tx + 1);
+        int16_t ty = r.y0 + inset;
+        int16_t indent = _ui_corner_indent(win, (int16_t)(win->corner_radius - inset));
+        int16_t tx = r.x0 + indent + inset + 1;
+        // the top-RIGHT arc mirrors the top-left one, so the line the title has to fit in is
+        // shortened at both ends
+        _draw_text_fitted(ui, tx, ty, win->title, (r.x1 - indent - inset) - tx + 1);
 
+        // the separator sits char_height lower, where the arc has already come most of the
+        // way back out -- so it gets its own, much smaller, indent rather than the title's
         int16_t sep_y = ty + font->char_height;
+        int16_t sep_indent = _ui_corner_indent(win,
+                        (int16_t)(win->corner_radius - (sep_y - r.y0)));
         if(sep_y <= r.y1 && sep_y >= 0)
                 rend_draw_line(render,
-                        (rend_point2d) { (uint16_t)(r.x0 + inset), (uint16_t)sep_y },
-                        (rend_point2d) { (uint16_t)(r.x1 - inset), (uint16_t)sep_y }, true);
+                        (rend_point2d) { (uint16_t)(r.x0 + sep_indent + inset), (uint16_t)sep_y },
+                        (rend_point2d) { (uint16_t)(r.x1 - sep_indent - inset), (uint16_t)sep_y }, true);
 }
 
 static void _paint_button(struct ui_context *ui, struct ui_button *btn)

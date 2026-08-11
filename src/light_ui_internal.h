@@ -21,30 +21,62 @@ static inline struct rend_context *_ui_render(const struct ui_context *ui)
         return ui->canvas->render;
 }
 
-// a window's inset from its own rect, per axis.
-//
-// the two differ because the clearance a rounded corner demands is not symmetric: an arc of
-// radius r eats into the leftmost columns only for the r rows nearest the top and bottom
-// edges, and below that the left edge is back at x0. keeping content out of the r rows at
-// each END is therefore enough to let the FULL width be used in between -- insetting
-// horizontally by the radius too would give back exactly the width a rounded frame exists to
-// recover.
-//
-// the vertical one takes the caller's own base inset rather than computing one, because the
-// two call sites legitimately differ: the title hugs the frame (border only) while content
-// also clears the padding. what they must not differ on is the corner clearance, which is why
-// that part lives here and not at either site.
-//
-// light_ui_window_layout_stack() and _paint_window()'s title placement both go through these.
-// they already had to agree on the header's height; where the header starts is a second thing
-// they cannot be allowed to disagree about
 static inline int16_t _ui_window_inset_x(const struct ui_window *win)
 {
         return (int16_t)win->padding + (win->border ? 1 : 0);
 }
-static inline int16_t _ui_window_inset_y(const struct ui_window *win, int16_t base)
+
+// integer square root, for the corner arithmetic below. Newton's method, converging in a
+// handful of iterations for anything a display can hold
+static inline uint32_t _ui_isqrt(uint32_t n)
 {
-        return win->corner_radius > base ? (int16_t)win->corner_radius : base;
+        if(n == 0)
+                return 0;
+        uint32_t x = n, y = (x + 1) / 2;
+        while(y < x) {
+                x = y;
+                y = (x + n / x) / 2;
+        }
+        return x;
+}
+
+// --- clearing a rounded corner, which can be paid for in either axis ---
+//
+// there are two ways to keep something inside a corner arc, and which one is right depends on
+// the shape of the thing. a short string can simply start further RIGHT; a full-width row
+// cannot, so it has to start further DOWN. the two helpers below are the same circle solved
+// for each axis, and using the wrong one is what makes a rounded frame either clip its
+// content or waste a band the width of the radius.
+//
+// how far the arc still intrudes horizontally, `dy` rows above the arc's centre:
+// x = r - sqrt(r^2 - dy^2). this is what lets a title sit at the very TOP of a rounded frame
+// -- it is pushed sideways by exactly as much as the curve reaches in at its own topmost row,
+// rather than the whole header being dropped below the curve entirely
+static inline int16_t _ui_corner_indent(const struct ui_window *win, int16_t dy)
+{
+        int32_t r = win->corner_radius;
+        if(r <= 0 || dy <= 0)
+                return 0;
+        if(dy >= r)
+                return (int16_t)r;
+        // isqrt truncates, so the indent comes out slightly LARGER than exact -- the error
+        // is on the safe side, which is the direction to round in when the alternative is
+        // text disappearing behind glass
+        return (int16_t)(r - (int32_t)_ui_isqrt((uint32_t)(r * r - (int32_t)dy * dy)));
+}
+// the mirror, for content that must span the full width: given the horizontal inset such
+// content sits at, how far down before the arc has come in that far.
+// dy = sqrt(ix * (2r - ix)), the same circle solved for the vertical instead
+static inline int16_t _ui_corner_drop(const struct ui_window *win, int16_t inset_x)
+{
+        int32_t r = win->corner_radius;
+        int32_t ix = inset_x;
+        if(r <= 0 || ix <= 0)
+                return 0;
+        if(ix >= r)
+                return 0;
+        // truncating again overestimates the drop, erring towards more clearance
+        return (int16_t)(r - (int32_t)_ui_isqrt((uint32_t)(ix * (2 * r - ix))));
 }
 
 static inline bool _ui_rect_empty(const struct ui_rect *r)

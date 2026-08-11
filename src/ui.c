@@ -141,19 +141,30 @@ void light_ui_window_layout_stack(struct ui_window *win, uint8_t gap)
         win->layout_gap = gap;
 
         struct ui_rect content = win->widget.rect;
-        // the frame itself occupies the outermost pixel ring, so content starts inside it --
-        // and by more than that vertically once the corners are rounded (see
-        // _ui_window_inset_y())
+        // the frame itself occupies the outermost pixel ring, so content starts inside it.
+        // rows span the full width, so a rounded corner has to be cleared vertically for them
+        // -- but only as far as the arc actually reaches in at inset_x, not by the whole
+        // radius. at radius 40 with a 3px inset that is 25 rows rather than 40, and the 30px
+        // it gives back over the two ends is a ninth of a 280px panel
         int16_t inset_x = _ui_window_inset_x(win);
-        int16_t inset_y = _ui_window_inset_y(win, inset_x);
+        int16_t drop = _ui_corner_drop(win, inset_x);
+        int16_t inset_y = drop > inset_x ? drop : inset_x;
         content.x0 += inset_x;
         content.y0 += inset_y;
         content.x1 -= inset_x;
         content.y1 -= inset_y;
 
-        // a titled window loses the title row plus its separator line to the header
-        if(win->title && _ui_render(win->widget.ui)->font)
-                content.y0 += _ui_render(win->widget.ui)->font->char_height + 2;
+        // a titled window loses the title row plus its separator line to the header. the
+        // header sits at the TOP of the frame, above where the corner drop puts content, so
+        // this is a lower bound on content.y0 rather than something added to it -- adding
+        // would push content down twice over for the same corner
+        const rend_font_t *font = _ui_render(win->widget.ui)->font;
+        if(win->title && font) {
+                int16_t header_bottom = (int16_t)(win->widget.rect.y0 + (win->border ? 1 : 0)
+                                + font->char_height + 2);
+                if(header_bottom > content.y0)
+                        content.y0 = header_bottom;
+        }
 
         uint16_t count = 0;
         for(struct ui_widget *c = win->widget.first_child; c; c = c->next_sibling) {
