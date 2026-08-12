@@ -123,7 +123,11 @@ static void _paint_button(struct ui_context *ui, struct ui_button *btn)
         // context's own colours around the calls and putting them back. works uniformly for
         // 1bpp and RGB565, since both go through the same _set_pixel() colour path
         uint16_t saved_fg = render->color_fg;
-        rend_draw_rect(render, p0, p1, focused);
+        if(btn->corner_radius)
+                rend_draw_rect_rounded_corners(render, p0, p1,
+                                btn->corner_radius, btn->corners, focused);
+        else
+                rend_draw_rect(render, p0, p1, focused);
         if(focused)
                 render->color_fg = render->color_bg;
 

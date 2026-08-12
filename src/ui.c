@@ -100,6 +100,8 @@ struct ui_button *light_ui_button_create(struct ui_context *ui, struct ui_widget
         btn->label = label;
         btn->on_press = on_press;
         btn->user_data = user_data;
+        btn->corner_radius = 0;
+        btn->corners = REND_CORNER_NONE;
         _widget_init(&btn->widget, ui, parent, UI_WIDGET_BUTTON, rect, true);
         // the first focusable widget created takes focus, so a two-button rig always has
         // somewhere to start cycling from without the application having to say so
@@ -152,7 +154,20 @@ void light_ui_window_layout_stack(struct ui_window *win, uint8_t gap)
         content.x0 += inset_x;
         content.y0 += inset_y;
         content.x1 -= inset_x;
-        content.y1 -= inset_y;
+
+        // the BOTTOM is different: rather than stopping short of the curve, the last row runs
+        // all the way down and takes the container's curve as its own bottom corners. the
+        // arithmetic works because insetting a rounded rect by inset_x leaves a rounded rect
+        // of radius (R - inset_x) about the SAME arc centres, so a row whose bottom edge is at
+        // y1 - inset_x and whose bottom corners have that radius traces the container exactly.
+        //
+        // it only works if the row is at least that tall, though. a shorter row's straight
+        // left edge would begin inside the arc and poke out of the container, so the flush
+        // treatment is offered and then withdrawn below if the rows come out too short
+        int16_t flush_r = (int16_t)win->corner_radius - inset_x;
+        if(flush_r < 0)
+                flush_r = 0;
+        content.y1 -= flush_r > 0 ? inset_x : inset_y;
 
         // a titled window loses the title row plus its separator line to the header. the
         // header sits at the TOP of the frame, above where the corner drop puts content, so
@@ -182,15 +197,38 @@ void light_ui_window_layout_stack(struct ui_window *win, uint8_t gap)
                                 (int)total_h, count);
                 row_h = 1;
         }
+        // the withdrawal promised above: rows too short to contain the container's curve pull
+        // the bottom back to the ordinary drop and lay out again, rather than drawing a row
+        // that hangs outside the frame
+        if(flush_r > 0 && row_h < flush_r) {
+                content.y1 -= (int16_t)(inset_y - inset_x);
+                flush_r = 0;
+                total_h = (int32_t)content.y1 - content.y0 + 1;
+                row_h = (total_h - (int32_t)gap * (count - 1)) / count;
+                if(row_h < 1)
+                        row_h = 1;
+        }
 
         int16_t y = content.y0;
+        uint16_t index = 0;
         for(struct ui_widget *c = win->widget.first_child; c; c = c->next_sibling) {
                 if(!c->visible)
                         continue;
                 c->rect.x0 = content.x0;
                 c->rect.x1 = content.x1;
                 c->rect.y0 = y;
-                c->rect.y1 = (int16_t)(y + row_h - 1);
+                // the last row absorbs the remainder of the integer division as well as
+                // reaching the bottom edge -- otherwise up to count-1 pixels of the container
+                // would show through below a row that is supposed to be flush with it
+                c->rect.y1 = (++index == count) ? content.y1 : (int16_t)(y + row_h - 1);
+                if(c->type == UI_WIDGET_BUTTON) {
+                        struct ui_button *btn = to_ui_button(c);
+                        bool last = (index == count);
+                        btn->corner_radius = (last && flush_r > 0) ? (uint8_t)flush_r : 0;
+                        // only the two corners that actually touch the container curve; the
+                        // top edge is shared with the row above and stays square
+                        btn->corners = (last && flush_r > 0) ? REND_CORNER_BOTTOM : REND_CORNER_NONE;
+                }
                 y = (int16_t)(y + row_h + gap);
         }
         light_ui_invalidate_widget(&win->widget);

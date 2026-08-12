@@ -88,6 +88,12 @@ struct ui_button {
         const uint8_t *label;
         void (*on_press)(struct ui_button *, void *);
         void *user_data;
+        // 0 for a square button. set by light_ui_window_layout_stack() on a row that sits
+        // flush against the inside of a rounded window, so the row follows the container's
+        // curve instead of stopping short of it -- `corners` names only the ones that touch
+        // it (REND_CORNER_* ), leaving the edge shared with the next row square
+        uint8_t corner_radius;
+        uint8_t corners;
 };
 
 struct ui_label {
