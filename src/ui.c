@@ -119,6 +119,76 @@ struct ui_label *light_ui_label_create(struct ui_context *ui, struct ui_widget *
         return lbl;
 }
 
+static struct ui_widget *_build_desc(struct ui_context *ui, struct ui_widget *parent,
+                                const struct ui_desc *desc)
+{
+        struct ui_widget *w;
+
+        switch(desc->type) {
+        case UI_WIDGET_WINDOW:; {
+                struct ui_window *win = light_ui_window_create(ui, parent, desc->rect, desc->text);
+                // before the children are created, not after: set_corner_radius() re-lays-out,
+                // so applying it later would lay the same stack out twice, and the first of
+                // those passes would divide a content area that had not yet been shrunk to
+                // clear the curve
+                if(desc->corner_radius)
+                        light_ui_window_set_corner_radius(win, desc->corner_radius);
+                w = &win->widget;
+                break;
+        }
+        case UI_WIDGET_BUTTON:; {
+                struct ui_button *btn = light_ui_button_create(ui, parent, desc->rect, desc->text,
+                                                                desc->on_press, desc->user_data);
+                w = &btn->widget;
+                break;
+        }
+        case UI_WIDGET_LABEL:; {
+                struct ui_label *lbl = light_ui_label_create(ui, parent, desc->rect, desc->text);
+                w = &lbl->widget;
+                break;
+        }
+        default:
+                light_error("ui descriptor names unknown widget type 0x%x", desc->type);
+                return NULL;
+        }
+
+        // every widget struct embeds its ui_widget FIRST, so this is the widget's own address
+        // and the caller's typed pointer needs no adjustment -- guaranteed by C, not by luck
+        if(desc->bind)
+                *desc->bind = w;
+
+        for(uint8_t i = 0; i < desc->child_count; i++)
+                _build_desc(ui, w, desc->children[i]);
+
+        // after the children, since a stack divides the content area between them. a
+        // descriptor that names no layout leaves the window at UI_LAYOUT_NONE, which is what
+        // keeps hand-placed rects where they were put
+        if(desc->type == UI_WIDGET_WINDOW && desc->layout == UI_LAYOUT_STACK)
+                light_ui_window_layout_stack(to_ui_window(w), desc->layout_gap);
+
+        return w;
+}
+
+struct ui_widget *light_ui_build(struct ui_context *ui, struct ui_widget *parent,
+                                const struct ui_desc *desc)
+{
+        struct ui_widget *w = _build_desc(ui, parent, desc);
+
+        //   a root descriptor carries no rect -- it cannot, since the canvas size is a runtime
+        // fact and the descriptor is a compile-time constant -- so the tree is sized here,
+        // against the canvas as it actually is. this is also what makes one descriptor work
+        // unchanged on a 64x128 OLED and a 240x280 panel.
+        //   it has to happen HERE rather than being left to the caller. the obvious candidate,
+        // light_ui_set_safe_inset(), returns early when the inset is unchanged, and an inset of
+        // 0 (every square-cornered rig) matches the value a fresh context already holds -- so
+        // relying on it would leave the root at its zeroed rect on exactly the boards that
+        // never set one, and the symptom would be a blank panel rather than any error
+        if(!parent && w)
+                light_ui_relayout(ui);
+
+        return w;
+}
+
 // next widget in depth-first pre-order, which is both paint order and focus order. returns
 // NULL once the walk has left the subtree rooted at `root`
 static struct ui_widget *_tree_next(struct ui_widget *w, struct ui_widget *root)

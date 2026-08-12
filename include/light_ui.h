@@ -237,6 +237,96 @@ extern void light_ui_input_activate(struct ui_context *ui);
 // same coordinate range; where it isn't, scale before calling
 extern bool light_ui_input_press_at(struct ui_context *ui, uint16_t x, uint16_t y);
 
+// --- declarative definitions -------------------------------------------------------------
+//
+// a widget tree can be written out as static data and realised in one call, instead of as a
+// sequence of light_ui_*_create() calls. the shape of the interface then reads off the source
+// the way font-crusher's command hierarchy reads off its Light_Command_Define() list:
+//
+//      Light_UI_Button_Define(_btn_ok,     "OK",     _on_press, (void *)0);
+//      Light_UI_Button_Define(_btn_cancel, "Cancel", _on_press, (void *)1);
+//      Light_UI_Window_Define(_main_window, "Title",
+//              Light_UI_Rounded(8),
+//              Light_UI_Stack(2),
+//              Light_UI_Children(&_btn_ok, &_btn_cancel));
+//
+//      light_ui_build(ui, NULL, &_main_window);
+//
+// ONE DIFFERENCE FROM light_cli IS DELIBERATE, and it is the reason this does not simply copy
+// that pattern. Light_Command_Define() names the PARENT in the child and collects siblings
+// through a linker section, so sibling order is link order. A command tree does not care:
+// commands are found by name. A widget tree cares a great deal -- sibling order is paint
+// order, focus order, and the top-to-bottom order of rows in a stack layout all at once (see
+// _widget_init()) -- and link order is not something a source file controls. So here the
+// PARENT lists its children, in the order they are meant to appear.
+//
+// descriptors are const and contain no state: the same one can build the same subtree into
+// two different contexts, and it can live in flash.
+
+struct ui_desc {
+        uint8_t type;
+        // window title, button label, or label text, by type. one field rather than three
+        // because every widget kind so far carries exactly one string, and a union of
+        // identically-typed members is just a longer way to write this
+        const uint8_t *text;
+        void (*on_press)(struct ui_button *, void *);
+        void *user_data;
+        uint8_t corner_radius;
+        uint8_t layout;
+        uint8_t layout_gap;
+        // left zeroed for anything a layout will place, which is the usual case. only
+        // meaningful for a hand-placed widget under a UI_LAYOUT_NONE parent
+        struct ui_rect rect;
+        // where to store the created widget, for handlers that need to reach it later.
+        // optional -- an on_press already receives its own button
+        void **bind;
+        const struct ui_desc *const *children;
+        uint8_t child_count;
+};
+
+// the array is a file-scope compound literal, so it has static storage duration and its
+// address is a constant expression -- which is what lets a const ui_desc be initialised with
+// it. the sizeof is over a second, identical literal purely to count the arguments; the
+// compiler folds it, and no second array survives into the image
+#define Light_UI_Children(...) \
+        .children = (const struct ui_desc *const[]){ __VA_ARGS__ }, \
+        .child_count = (uint8_t)(sizeof((const struct ui_desc *const[]){ __VA_ARGS__ }) \
+                                        / sizeof(const struct ui_desc *))
+
+// modifiers, written as designated-initialiser fragments so they can be given in any order
+// and omitted entirely
+#define Light_UI_Stack(gap)             .layout = UI_LAYOUT_STACK, .layout_gap = (gap)
+#define Light_UI_Rounded(radius)        .corner_radius = (radius)
+#define Light_UI_Rect(_x0, _y0, _x1, _y1) \
+        .rect = { (_x0), (_y0), (_x1), (_y1) }
+#define Light_UI_Bind(ptr)              .bind = (void **)&(ptr)
+
+#define Light_UI_Window_Define(sym, _title, ...) \
+        static const struct ui_desc sym = { \
+                .type = UI_WIDGET_WINDOW, .text = (const uint8_t *)(_title), __VA_ARGS__ }
+#define Light_UI_Button_Define(sym, _label, _on_press, _user_data, ...) \
+        static const struct ui_desc sym = { \
+                .type = UI_WIDGET_BUTTON, .text = (const uint8_t *)(_label), \
+                .on_press = (_on_press), .user_data = (_user_data), __VA_ARGS__ }
+#define Light_UI_Label_Define(sym, _text, ...) \
+        static const struct ui_desc sym = { \
+                .type = UI_WIDGET_LABEL, .text = (const uint8_t *)(_text), __VA_ARGS__ }
+
+// realises `desc` and its children under `parent` (NULL for the context's root widget), and
+// returns the widget created for `desc` itself, or NULL if the descriptor names a type this
+// build does not know.
+//
+// equivalent to the light_ui_*_create() calls it replaces, in the order that gets the details
+// right: a window's corner radius is applied before its children exist, so the clearance the
+// curve needs is already accounted for when the single layout pass runs, and the layout runs
+// after them, since it divides the content area between them.
+//
+// building a ROOT (parent == NULL) also relayouts, sizing the tree to the canvas. a descriptor
+// cannot carry the root's rect -- the canvas size is a runtime fact -- and that is what lets
+// the same descriptor serve a 64x128 OLED and a 240x280 panel unchanged
+extern struct ui_widget *light_ui_build(struct ui_context *ui, struct ui_widget *parent,
+                                        const struct ui_desc *desc);
+
 extern void light_ui_set_focus(struct ui_context *ui, struct ui_widget *w);
 extern void light_ui_widget_set_visible(struct ui_widget *w, bool visible);
 extern void light_ui_widget_set_enabled(struct ui_widget *w, bool enabled);
