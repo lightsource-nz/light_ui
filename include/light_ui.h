@@ -247,6 +247,34 @@ extern void light_ui_input_activate(struct ui_context *ui);
 // same coordinate range; where it isn't, scale before calling
 extern bool light_ui_input_press_at(struct ui_context *ui, uint16_t x, uint16_t y);
 
+// a swipe's direction in the LOGICAL frame, i.e. the one the user is looking at
+#define UI_SWIPE_NONE                   0
+#define UI_SWIPE_UP                     1
+#define UI_SWIPE_DOWN                   2
+#define UI_SWIPE_LEFT                   3
+#define UI_SWIPE_RIGHT                  4
+
+//   classifies a swipe given its two endpoints in PANEL coordinates -- exactly what a touch
+// controller reports -- and returns a UI_SWIPE_* direction in the logical frame.
+//
+//   this exists because a touch controller classifies gestures in the PANEL's frame, which is
+// fixed to the glass, while the user is swiping relative to the interface, which rotates. At
+// REND_ROTATE_0 the two agree and a controller's own "swipe right" is right; at 90 or 270 they
+// are perpendicular, so a gesture code taken at face value acts on the wrong axis and appears
+// to work only in one orientation. It is the same mistake light_ui_input_press_at() exists to
+// prevent for taps, and it is solved the same way and in the same place: light_ui owns the
+// render context and therefore the rotation, so it can do the conversion and the caller cannot.
+//
+//   pass the endpoints rather than the controller's own gesture code. The code has already
+// discarded the direction into the panel's frame, and no amount of rotating a label recovers
+// which way the finger actually moved.
+//
+// returns UI_SWIPE_NONE for a swipe with no dominant axis, which includes the degenerate case
+// of both endpoints clamping to the same edge of the canvas
+extern uint8_t light_ui_swipe_direction(struct ui_context *ui,
+                                        uint16_t start_x, uint16_t start_y,
+                                        uint16_t end_x, uint16_t end_y);
+
 // --- declarative definitions -------------------------------------------------------------
 //
 // a widget tree can be written out as static data and realised in one call, instead of as a

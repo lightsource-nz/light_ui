@@ -609,6 +609,36 @@ void light_ui_input_activate(struct ui_context *ui)
                 _activate(ui->focused);
 }
 
+uint8_t light_ui_swipe_direction(struct ui_context *ui, uint16_t start_x, uint16_t start_y,
+                                uint16_t end_x, uint16_t end_y)
+{
+        //   both endpoints go through the same untransform a tap does, rather than the
+        // direction being rotated by a table of its own. There is then only one place that
+        // knows how panel coordinates relate to logical ones, so the two cannot drift apart --
+        // and a swipe is classified in exactly the frame the user made it in
+        rend_point2d a = rend_untransform_point(_ui_render(ui),
+                                        (rend_point2d) { start_x, start_y });
+        rend_point2d b = rend_untransform_point(_ui_render(ui),
+                                        (rend_point2d) { end_x, end_y });
+
+        int32_t dx = (int32_t)b.x - (int32_t)a.x;
+        int32_t dy = (int32_t)b.y - (int32_t)a.y;
+        int32_t adx = dx < 0 ? -dx : dx;
+        int32_t ady = dy < 0 ? -dy : dy;
+
+        //   no movement in either axis. rend_untransform_point() clamps to the canvas, so this
+        // also covers a swipe whose ends both landed off the same edge -- a real possibility
+        // where the touch panel's coordinate range is wider than the display's
+        if(!adx && !ady)
+                return UI_SWIPE_NONE;
+
+        // the dominant axis decides, so a swipe that drifts diagonally still reads as the one
+        // the user meant. ties go to horizontal, arbitrarily but consistently
+        if(adx >= ady)
+                return dx > 0 ? UI_SWIPE_RIGHT : UI_SWIPE_LEFT;
+        return dy > 0 ? UI_SWIPE_DOWN : UI_SWIPE_UP;
+}
+
 bool light_ui_input_press_at(struct ui_context *ui, uint16_t x, uint16_t y)
 {
         // the caller hands us the panel's own coordinates; widgets live in logical space,
