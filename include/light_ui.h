@@ -44,6 +44,7 @@ struct ui_rect {
 
 struct ui_widget;
 struct ui_context;
+struct ui_page;
 
 // widgets are plain allocations owned by their ui_context, NOT light_objects. the object
 // tree exists to name and refcount *devices* -- discoverable hardware whose add triggers
@@ -117,6 +118,15 @@ struct ui_context {
         // pixels kept clear on every edge, for panels whose glass does not show the whole
         // pixel grid (see light_ui_set_safe_inset())
         uint8_t safe_inset;
+
+        // --- navigation (see struct ui_page) ---
+        // the page currently built into the tree, or NULL for a context whose tree was built
+        // directly with light_ui_build() and is not navigating between pages at all
+        const struct ui_page *page;
+        //   where light_ui_navigate_back() goes, when it is not simply the current page's
+        // parent. Set only by light_ui_navigate_returning(), and cleared by every ordinary
+        // navigation, so an override applies to exactly the one transfer that asked for it
+        const struct ui_page *return_page;
 
         // --- rotation animation, driven from light_ui_render() ---
         // while active, frames show the pre-rotation image turning rather than the widget
@@ -326,6 +336,87 @@ struct ui_desc {
 // the same descriptor serve a 64x128 OLED and a 240x280 panel unchanged
 extern struct ui_widget *light_ui_build(struct ui_context *ui, struct ui_widget *parent,
                                         const struct ui_desc *desc);
+
+// --- pages and navigation ------------------------------------------------------------------
+//
+// a page is a named descriptor tree plus its place in the interface's structure. Navigating
+// tears the current tree down and builds the new one, so only one page's widgets exist at a
+// time -- which is what keeps a deep interface affordable on a part with 520K of RAM, and the
+// reason descriptors were made const and reusable in the first place.
+//
+//      Light_UI_Page_Declare(page_settings);
+//
+//      Light_UI_Button_Define(_btn_settings, "Settings", _on_open_settings, NULL);
+//      Light_UI_Window_Define(_home_window, "Home", Light_UI_Children(&_btn_settings));
+//      Light_UI_Page_Define(page_home, NULL, _home_window);
+//
+//      Light_UI_Window_Define(_settings_window, "Settings", ...);
+//      Light_UI_Page_Define(page_settings, &page_home, _settings_window);
+//
+//      static void _on_open_settings(struct ui_button *b, void *d)
+//      { light_ui_navigate(b->widget.ui, &page_settings); }
+//
+//   PARENT, NOT HISTORY. `parent` describes where a page sits in the interface, the same way
+// a directory knows its containing directory. Back therefore goes somewhere predictable no
+// matter how the user arrived, and costs no stack -- a history list would have to be bounded,
+// and the bound would be reached by exactly the aimless wandering it exists to serve.
+//
+//   Pages are non-static so they can reference each other across a cycle (a child names its
+// parent, a parent's handler names the child); use Light_UI_Page_Declare() for the forward
+// reference. They are const and hold no state, so they live in flash.
+struct ui_page {
+        // the widget tree this page shows. built under the context root on navigation
+        const struct ui_desc *content;
+        // where light_ui_navigate_back() goes by default. NULL for a top-level page, which
+        // is what makes back a no-op there rather than an error
+        const struct ui_page *parent;
+};
+
+#define Light_UI_Page_Declare(sym) \
+        extern const struct ui_page sym
+#define Light_UI_Page_Define(sym, _parent, _content) \
+        const struct ui_page sym = { .content = &(_content), .parent = (_parent) }
+
+//   builds `page` in place of whatever the context is showing, freeing the old tree. Back
+// from here goes to page->parent.
+//
+// safe to call from a widget handler -- the handler's own widget is destroyed by this, so it
+// must not touch it afterwards, which is why the navigating call is conventionally the last
+// statement in the handler
+extern void light_ui_navigate(struct ui_context *ui, const struct ui_page *page);
+
+//   the same, but back from `page` goes to `return_page` rather than to page->parent. For a
+// cross-tree jump: a page reached from somewhere other than its structural parent, which
+// should return to where it was actually reached from.
+//
+// the override lasts exactly one page. Navigating onward from `page` clears it, so the page
+// after that goes back to ITS parent, not to this return address
+extern void light_ui_navigate_returning(struct ui_context *ui, const struct ui_page *page,
+                                        const struct ui_page *return_page);
+
+//   goes to the current page's return address if one was set, otherwise to its parent.
+// Returns false and changes nothing when there is nowhere to go -- a top-level page, or a
+// context not using pages at all -- so a caller can leave the gesture meaning nothing there
+// rather than having to know the structure itself.
+//
+//   light_ui has no idea what a swipe is, for the same reason it has no idea what a button
+// or an IMU is (see the input section above): an application maps its own hardware onto this,
+// typically TOUCH_GESTURE_SWIPE_RIGHT
+extern bool light_ui_navigate_back(struct ui_context *ui);
+
+// the page currently shown, or NULL for a context built directly with light_ui_build()
+static inline const struct ui_page *light_ui_current_page(struct ui_context *ui)
+{
+        return ui->page;
+}
+
+//   frees a widget and everything under it, unlinking it from its parent (or from the
+// context root) first. Focus is cleared if it pointed anywhere inside.
+//
+// public because navigation is not the only reason a subtree stops being wanted, but note
+// that widgets are owned by their context: this is the only correct way to release one, and
+// nothing else frees them. Building a second root over the first used to simply drop it
+extern void light_ui_widget_destroy(struct ui_widget *w);
 
 extern void light_ui_set_focus(struct ui_context *ui, struct ui_widget *w);
 extern void light_ui_widget_set_visible(struct ui_widget *w, bool visible);

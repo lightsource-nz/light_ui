@@ -39,6 +39,10 @@ struct ui_context *light_ui_create_context(struct canvas_context *canvas)
         ui->rotate_start_ms = 0;
         ui->rotate_duration_ms = LIGHT_UI_ROTATE_MS;
         ui->safe_inset = 0;
+        // light_alloc() does not zero, and navigate_back() reads both of these before anything
+        // has necessarily navigated
+        ui->page = NULL;
+        ui->return_page = NULL;
         if(!canvas->render->font)
                 light_warn("render context '%s' has no font -- widget labels will not render",
                                 canvas->render->name);
@@ -187,6 +191,100 @@ struct ui_widget *light_ui_build(struct ui_context *ui, struct ui_widget *parent
                 light_ui_relayout(ui);
 
         return w;
+}
+
+// --- teardown and navigation ---
+
+static void _widget_destroy_subtree(struct ui_widget *w)
+{
+        //   children first: each is freed before the parent that names it, so no pointer is
+        // followed after the memory behind it has gone
+        struct ui_widget *child = w->first_child;
+        while(child) {
+                struct ui_widget *next = child->next_sibling;
+                _widget_destroy_subtree(child);
+                child = next;
+        }
+        //   focus is cleared here rather than by the caller: it can point at any widget in the
+        // subtree, not just its root, and this is the one walk that visits all of them
+        if(w->ui->focused == w)
+                w->ui->focused = NULL;
+        light_free(w);
+}
+
+void light_ui_widget_destroy(struct ui_widget *w)
+{
+        if(!w)
+                return;
+
+        struct ui_context *ui = w->ui;
+
+        //   unlinked BEFORE anything is freed, so the tree is never left holding a pointer to
+        // released memory even momentarily
+        if(!w->parent) {
+                if(ui->root == w)
+                        ui->root = NULL;
+        } else {
+                struct ui_widget **slot = &w->parent->first_child;
+                while(*slot && *slot != w)
+                        slot = &(*slot)->next_sibling;
+                if(*slot)
+                        *slot = w->next_sibling;
+        }
+        _widget_destroy_subtree(w);
+
+        //   whatever the subtree occupied has to be repainted; the widget that owned that area
+        // no longer exists to invalidate it
+        light_ui_invalidate(ui);
+}
+
+static void _show_page(struct ui_context *ui, const struct ui_page *page,
+                        const struct ui_page *return_page)
+{
+        if(!page || !page->content) {
+                light_error("cannot navigate to a page with no content");
+                return;
+        }
+        //   the old tree goes before the new one is built. Without this the context would
+        // simply drop its root pointer and leak every widget under it, which is what happened
+        // to anything that built a second root
+        if(ui->root)
+                light_ui_widget_destroy(ui->root);
+
+        ui->page = page;
+        ui->return_page = return_page;
+
+        // builds under the (now empty) root and relayouts against the canvas
+        light_ui_build(ui, NULL, page->content);
+        light_ui_invalidate(ui);
+}
+
+void light_ui_navigate(struct ui_context *ui, const struct ui_page *page)
+{
+        // no return override: back from here follows the page's own parent
+        _show_page(ui, page, NULL);
+}
+
+void light_ui_navigate_returning(struct ui_context *ui, const struct ui_page *page,
+                                const struct ui_page *return_page)
+{
+        _show_page(ui, page, return_page);
+}
+
+bool light_ui_navigate_back(struct ui_context *ui)
+{
+        if(!ui->page)
+                return false;
+
+        //   the override wins over the structural parent, and only for this one page --
+        // _show_page() clears it on the way out, so the page we return TO goes back to its own
+        // parent rather than inheriting this address
+        const struct ui_page *target = ui->return_page ? ui->return_page : ui->page->parent;
+        if(!target)
+                return false;
+
+        _show_page(ui, target, NULL);
+        return true;
 }
 
 // next widget in depth-first pre-order, which is both paint order and focus order. returns
