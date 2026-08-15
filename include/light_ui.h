@@ -14,6 +14,11 @@
 // it, since input is still collected, only the drawing is given over to the animation
 #define LIGHT_UI_ROTATE_MS              280
 
+// how long a page transition takes. shorter than a rotation: a rotation is re-orienting the
+// whole interface and wants to be followed, while a page change is a step through a structure
+// the user already has in mind, and waiting for it is what makes an interface feel slow
+#define LIGHT_UI_PAGE_MOVE_MS           180
+
 // longest label/title light_ui will render. labels are truncated to whatever fits the
 // widget anyway (see the fixed-pitch note below), so this only bounds the scratch buffer
 // the truncated copy is built in
@@ -127,6 +132,28 @@ struct ui_context {
         // parent. Set only by light_ui_navigate_returning(), and cleared by every ordinary
         // navigation, so an override applies to exactly the one transfer that asked for it
         const struct ui_page *return_page;
+
+        // --- page transition animation, driven from light_ui_render() ---
+        //   while active, each frame draws the incoming page and then slides the image
+        // captured before the transfer off it, so the outgoing page appears to move away and
+        // reveal the new one. Only the outgoing image is stored: the incoming page is the live
+        // widget tree, redrawn each step, which is why this costs one buffer and not two
+        bool page_moving;
+        // PHYSICAL unit direction the outgoing image travels in, derived from the logical
+        // direction so a transition reads the same way whatever the panel is rotated to
+        int8_t page_move_dx;
+        int8_t page_move_dy;
+        // how far it has to travel to leave: the buffer's extent along that axis
+        uint16_t page_move_span;
+        uint32_t page_move_start_ms;
+        uint16_t page_move_duration_ms;
+
+        //   a rotation asked for while a transition was running, applied once it finishes.
+        // The two animations both want the back buffer and the frame, so they cannot overlap;
+        // deferring rather than dropping either one means the transition is seen through and
+        // the device still ends up the right way up
+        bool rotate_deferred;
+        uint8_t rotate_deferred_target;
 
         // --- rotation animation, driven from light_ui_render() ---
         // while active, frames show the pre-rotation image turning rather than the widget

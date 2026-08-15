@@ -43,6 +43,14 @@ struct ui_context *light_ui_create_context(struct canvas_context *canvas)
         // has necessarily navigated
         ui->page = NULL;
         ui->return_page = NULL;
+        ui->page_moving = false;
+        ui->page_move_dx = 0;
+        ui->page_move_dy = 0;
+        ui->page_move_span = 0;
+        ui->page_move_start_ms = 0;
+        ui->page_move_duration_ms = LIGHT_UI_PAGE_MOVE_MS;
+        ui->rotate_deferred = false;
+        ui->rotate_deferred_target = canvas->render->rotation;
         if(!canvas->render->font)
                 light_warn("render context '%s' has no font -- widget labels will not render",
                                 canvas->render->name);
@@ -238,13 +246,53 @@ void light_ui_widget_destroy(struct ui_widget *w)
         light_ui_invalidate(ui);
 }
 
+//   captures the frame on screen and sets the outgoing image sliding, so the incoming page is
+// revealed rather than replacing it between one frame and the next. `back` picks which way it
+// leaves: forward pushes it toward logical -x so the new page arrives from the right, and a
+// return sends it the other way, which is what makes the two directions distinguishable
+static void _begin_page_move(struct ui_context *ui, bool back)
+{
+        struct rend_context *render = _ui_render(ui);
+
+        //   nothing to slide before the first page exists, and nowhere to hold the image
+        // without a second buffer. A rotation in progress already owns both the back buffer
+        // and the frame, so a transfer during one simply snaps -- a correct change beats two
+        // animations fighting over the same pixels
+        if(!ui->root || !render->buffer_back || ui->rotating)
+                return;
+
+        //   the direction is chosen in LOGICAL terms and converted here, because the blit
+        // works in physical buffer space. transform.a and .c are the physical components of
+        // logical +x, which for a pure rotation makes exactly one of them non-zero -- so this
+        // picks the physical axis the viewer would call horizontal, whatever the board's
+        // orientation. Getting this wrong would slide the page sideways in portrait and
+        // vertically in landscape, the same class of mistake as classifying a swipe by its
+        // panel-frame direction
+        const rend_transform_t *m = &render->transform;
+        int8_t ux = (m->a > 0) - (m->a < 0);
+        int8_t uy = (m->c > 0) - (m->c < 0);
+        int8_t sign = back ? 1 : -1;
+
+        memcpy(render->buffer_back, render->buffer, render->buffer_length);
+        light_canvas_set_double_buffer(ui->canvas, false);
+
+        ui->page_moving = true;
+        ui->page_move_dx = (int8_t)(sign * ux);
+        ui->page_move_dy = (int8_t)(sign * uy);
+        ui->page_move_span = ux ? render->phys_dim_x : render->phys_dim_y;
+        ui->page_move_start_ms = light_platform_get_time_since_init();
+        ui->page_move_duration_ms = LIGHT_UI_PAGE_MOVE_MS;
+}
+
 static void _show_page(struct ui_context *ui, const struct ui_page *page,
-                        const struct ui_page *return_page)
+                        const struct ui_page *return_page, bool back)
 {
         if(!page || !page->content) {
                 light_error("cannot navigate to a page with no content");
                 return;
         }
+        // before the old tree is destroyed: the image being captured is the one it drew
+        _begin_page_move(ui, back);
         //   the old tree goes before the new one is built. Without this the context would
         // simply drop its root pointer and leak every widget under it, which is what happened
         // to anything that built a second root
@@ -262,13 +310,13 @@ static void _show_page(struct ui_context *ui, const struct ui_page *page,
 void light_ui_navigate(struct ui_context *ui, const struct ui_page *page)
 {
         // no return override: back from here follows the page's own parent
-        _show_page(ui, page, NULL);
+        _show_page(ui, page, NULL, false);
 }
 
 void light_ui_navigate_returning(struct ui_context *ui, const struct ui_page *page,
                                 const struct ui_page *return_page)
 {
-        _show_page(ui, page, return_page);
+        _show_page(ui, page, return_page, false);
 }
 
 bool light_ui_navigate_back(struct ui_context *ui)
@@ -283,7 +331,7 @@ bool light_ui_navigate_back(struct ui_context *ui)
         if(!target)
                 return false;
 
-        _show_page(ui, target, NULL);
+        _show_page(ui, target, NULL, true);
         return true;
 }
 
@@ -504,6 +552,20 @@ void light_ui_set_rotation(struct ui_context *ui, uint8_t rotation)
         // it stays put for the duration. a memcpy of a frame costs a fraction of the
         // transfer that pushes it, and it avoids having to reason about swap ordering
         // against an update that may still be in flight
+        //   a transition in flight keeps the frame; this rotation waits for it. Both animations
+        // want the back buffer and the frame, so they cannot run together -- and of the two
+        // ways to resolve that, deferring is the one that loses nothing: the transition is seen
+        // through, and the board still ends up the right way up a fraction of a second later.
+        //
+        //   the target is recorded rather than the rotation being restarted from scratch, so a
+        // board turned twice mid-transition settles on where it actually ended up
+        if(ui->page_moving) {
+                ui->rotate_deferred = true;
+                ui->rotate_deferred_target = rotation;
+                light_debug("rotation to %d deferred until the page transition finishes", rotation);
+                return;
+        }
+
         memcpy(render->buffer_back, render->buffer, render->buffer_length);
         light_canvas_set_double_buffer(ui->canvas, false);
 
@@ -612,6 +674,12 @@ void light_ui_input_activate(struct ui_context *ui)
 uint8_t light_ui_swipe_direction(struct ui_context *ui, uint16_t start_x, uint16_t start_y,
                                 uint16_t end_x, uint16_t end_y)
 {
+        //   discarded while the interface is turning, for the same reason a tap is (see
+        // light_ui_input_press_at): the frame being shown is the pre-rotation image mid-turn,
+        // so the axes the user swiped along are not the ones this would resolve against
+        if(ui->rotating)
+                return UI_SWIPE_NONE;
+
         //   both endpoints go through the same untransform a tap does, rather than the
         // direction being rotated by a table of its own. There is then only one place that
         // knows how panel coordinates relate to logical ones, so the two cannot drift apart --
@@ -641,6 +709,15 @@ uint8_t light_ui_swipe_direction(struct ui_context *ui, uint16_t start_x, uint16
 
 bool light_ui_input_press_at(struct ui_context *ui, uint16_t x, uint16_t y)
 {
+        //   silently ignored while the interface is turning. Mid-rotation the panel is showing
+        // the pre-rotation image being animated, while the widget tree is still laid out for
+        // the OLD rotation and the transform has not been committed to the new one -- so a tap
+        // would be resolved against a layout that matches neither what is on screen nor where
+        // the interface is about to settle. There is no correct answer to give, and acting on
+        // a wrong one presses a button the user could not see
+        if(ui->rotating)
+                return false;
+
         // the caller hands us the panel's own coordinates; widgets live in logical space,
         // and under rotation those are different points. doing this here rather than in
         // every application is the whole reason light_ui owns the render context
@@ -741,8 +818,66 @@ static bool _render_rotation_step(struct ui_context *ui)
         return true;
 }
 
+//   draws one step of a page transition. returns true once it has finished, so the caller knows
+// an ordinary repaint is due -- the same contract as _render_rotation_step()
+static bool _render_page_step(struct ui_context *ui)
+{
+        struct rend_context *render = _ui_render(ui);
+        uint32_t elapsed = light_platform_get_time_since_init() - ui->page_move_start_ms;
+
+        if(elapsed >= ui->page_move_duration_ms) {
+                // swapping goes back on before the repaint that follows, so it runs against a
+                // normally double-buffered canvas again
+                light_canvas_set_double_buffer(ui->canvas, true);
+                ui->page_moving = false;
+                light_ui_invalidate(ui);
+
+                //   a rotation that arrived mid-transition runs now. Cleared BEFORE the call,
+                // not after: light_ui_set_rotation() checks page_moving, which is already
+                // false, so it proceeds -- and leaving the flag set would re-arm the same
+                // rotation the next time any transition ended
+                if(ui->rotate_deferred) {
+                        uint8_t target = ui->rotate_deferred_target;
+                        ui->rotate_deferred = false;
+                        light_ui_set_rotation(ui, target);
+                }
+                return true;
+        }
+        if(!light_canvas_frame_begin(ui->canvas))
+                return false;
+
+        //   the incoming page first, as an ordinary repaint of the live tree, then the
+        // outgoing image over the top of it. rend_blit_offset() leaves the band it no longer
+        // covers untouched, so what shows through there is the new page already drawn beneath
+        if(ui->root)
+                _ui_paint_widget(ui, ui->root);
+
+        // linear, for the same reason the rotation is: at this duration the frames are few
+        // enough that an eased curve is below what the eye resolves
+        int32_t travel = ((int32_t)ui->page_move_span * (int32_t)elapsed)
+                        / (int32_t)ui->page_move_duration_ms;
+        rend_blit_offset(render, render->buffer_back,
+                        (int32_t)ui->page_move_dx * travel, (int32_t)ui->page_move_dy * travel);
+
+        light_canvas_invalidate_all(ui->canvas);
+        light_canvas_frame_end(ui->canvas);
+        return false;
+}
+
 void light_ui_render(struct ui_context *ui)
 {
+        //   the two animations are mutually exclusive by construction, from both ends:
+        // _begin_page_move() declines while a rotation runs, and light_ui_set_rotation()
+        // defers while a transition runs. So the order of these two blocks decides nothing --
+        // it is written transition-first only because that is the one that hands a rotation
+        // on when it finishes
+        if(ui->page_moving) {
+                if(!_render_page_step(ui))
+                        return;
+                // fell through on the final step, which restored swapping and marked
+                // everything dirty; draw the settled page below rather than waiting a tick
+        }
+
         if(ui->rotating) {
                 // the animation owns the frame while it runs -- the widget tree is not drawn
                 // at all, only the image of it captured before the turn began
