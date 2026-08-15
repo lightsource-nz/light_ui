@@ -67,6 +67,8 @@ static void _widget_init(struct ui_widget *w, struct ui_context *ui, struct ui_w
         w->visible = true;
         w->focusable = focusable;
         w->enabled = true;
+        // no slop unless a layout grants it; a widget positioned by hand owns exactly its rect
+        w->hit_slop_y1 = 0;
         w->ui = ui;
         w->parent = parent;
         w->next_sibling = NULL;
@@ -433,13 +435,38 @@ void light_ui_window_layout_stack(struct ui_window *win, uint8_t gap)
                 c->rect.x0 = content.x0;
                 c->rect.x1 = content.x1;
                 c->rect.y0 = y;
+                bool last = (++index == count);
                 // the last row absorbs the remainder of the integer division as well as
                 // reaching the bottom edge -- otherwise up to count-1 pixels of the container
                 // would show through below a row that is supposed to be flush with it
-                c->rect.y1 = (++index == count) ? content.y1 : (int16_t)(y + row_h - 1);
+                c->rect.y1 = last ? content.y1 : (int16_t)(y + row_h - 1);
+
+                //   a flush last row also claims the strip beneath it for hit-testing. That
+                // strip is the window's padding and border, and below the root window the safe
+                // inset as well -- nothing is drawn there and no other widget wants it, but it
+                // sits between the row and the edge of the glass, which is exactly where a
+                // thumb reaching for the bottom button lands. Left dead it reads as the button
+                // not responding.
+                //
+                //   only when flush. A row that pulled back from the curve (the withdrawal
+                // above) stops short on purpose, and the gap it leaves is the container
+                // showing through by design rather than padding that belongs to the row
+                c->hit_slop_y1 = 0;
+                if(last && flush_r > 0) {
+                        // the root window is the one inset from the canvas, so it is the only
+                        // one that can extend past its own edge without reaching into a parent
+                        int16_t floor_y = win->widget.parent
+                                ? win->widget.rect.y1
+                                : (int16_t)(_ui_render(win->widget.ui)->dim_y - 1);
+                        int32_t slop = (int32_t)floor_y - c->rect.y1;
+                        if(slop > 255)
+                                slop = 255;
+                        if(slop > 0)
+                                c->hit_slop_y1 = (uint8_t)slop;
+                }
+
                 if(c->type == UI_WIDGET_BUTTON) {
                         struct ui_button *btn = to_ui_button(c);
-                        bool last = (index == count);
                         btn->corner_radius = (last && flush_r > 0) ? (uint8_t)flush_r : 0;
                         // only the two corners that actually touch the container curve; the
                         // top edge is shared with the row above and stays square
@@ -707,6 +734,16 @@ uint8_t light_ui_swipe_direction(struct ui_context *ui, uint16_t start_x, uint16
         return dy > 0 ? UI_SWIPE_DOWN : UI_SWIPE_UP;
 }
 
+//   the hit area is the drawn rect plus whatever slop the layout granted below it. Kept apart
+// from _ui_rect_contains() so that only presses widen: invalidation, drawing and the swipe
+// path all still work off the true rect, and a widget can never repaint an area it does not own
+static bool _ui_widget_hit(const struct ui_widget *w, int16_t x, int16_t y)
+{
+        struct ui_rect r = w->rect;
+        r.y1 = (int16_t)(r.y1 + w->hit_slop_y1);
+        return _ui_rect_contains(&r, x, y);
+}
+
 bool light_ui_input_press_at(struct ui_context *ui, uint16_t x, uint16_t y)
 {
         //   silently ignored while the interface is turning. Mid-rotation the panel is showing
@@ -731,7 +768,7 @@ bool light_ui_input_press_at(struct ui_context *ui, uint16_t x, uint16_t y)
         for(struct ui_widget *w = ui->root; w; w = _tree_next(w, ui->root)) {
                 if(!_is_focusable(w))
                         continue;
-                if(_ui_rect_contains(&w->rect, (int16_t)x, (int16_t)y))
+                if(_ui_widget_hit(w, (int16_t)x, (int16_t)y))
                         hit = w;
         }
         if(!hit)

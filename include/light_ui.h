@@ -65,6 +65,16 @@ struct ui_widget {
         bool visible;
         bool focusable;
         bool enabled;
+        //   extra rows below rect.y1 that count as a hit but are never drawn. Set by
+        // light_ui_window_layout_stack() on a row laid out flush to a rounded container: the
+        // strip beneath it -- the window's padding, its border, and the safe inset outside
+        // that -- has no widget of its own and reads as part of the row, because the row is
+        // drawn tracing the container's curve right down to it.
+        //
+        //   a HIT extension rather than a taller rect on purpose. Growing the rect would grow
+        // the drawing with it, filling in the padding that keeps the row inside the frame it
+        // is supposed to trace. What is wrong here is the target, not the picture
+        uint8_t hit_slop_y1;
         struct ui_context *ui;
         struct ui_widget *parent;
         struct ui_widget *next_sibling;
