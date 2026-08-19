@@ -4,7 +4,7 @@
 #include <light.h>
 #include <light_canvas.h>
 #include <light_display.h>
-#include <rend.h>
+#include <light_draw.h>
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -34,11 +34,11 @@
 #define UI_LAYOUT_NONE                  0
 #define UI_LAYOUT_STACK                 1
 
-// an inclusive rectangle in LOGICAL rend coordinates -- the same space the caller draws in
-// (post-rotation, see rend_context_set_rotation()), never the physical buffer's.
+// an inclusive rectangle in LOGICAL light_draw coordinates -- the same space the caller draws in
+// (post-rotation, see light_draw_context_set_rotation()), never the physical buffer's.
 //
-// signed, unlike rend_point2d: a widget positioned partly off-canvas is clipped by
-// light_ui before anything reaches rend, and uint16_t would wrap those coordinates into
+// signed, unlike light_draw_point2d: a widget positioned partly off-canvas is clipped by
+// light_ui before anything reaches light_draw, and uint16_t would wrap those coordinates into
 // huge positive values instead of letting the clip see them as negative
 struct ui_rect {
         int16_t x0;
@@ -107,7 +107,7 @@ struct ui_button {
         // 0 for a square button. set by light_ui_window_layout_stack() on a row that sits
         // flush against the inside of a rounded window, so the row follows the container's
         // curve instead of stopping short of it -- `corners` names only the ones that touch
-        // it (REND_CORNER_* ), leaving the edge shared with the next row square
+        // it (LIGHT_DRAW_CORNER_* ), leaving the edge shared with the next row square
         uint8_t corner_radius;
         uint8_t corners;
 };
@@ -183,7 +183,7 @@ struct ui_context {
 extern void light_ui_init();
 
 // binds a UI to the canvas it is presented through. the canvas's render context must
-// already have a font set (rend_context_set_font()) -- rend_draw_text() is a silent no-op
+// already have a font set (light_draw_context_set_font()) -- light_draw_draw_text() is a silent no-op
 // without one, so an unfonted context renders frames with no labels in them
 extern struct ui_context *light_ui_create_context(struct canvas_context *canvas);
 
@@ -242,12 +242,12 @@ extern void light_ui_relayout(struct ui_context *ui);
 // so it takes effect on the next layout
 extern void light_ui_set_safe_inset(struct ui_context *ui, uint8_t inset);
 
-// rotates the whole interface (a REND_ROTATE_* value), so it can be kept upright as the
+// rotates the whole interface (a LIGHT_DRAW_ROTATE_* value), so it can be kept upright as the
 // device is turned. a no-op if the rotation is unchanged; otherwise it re-lays-out (the
 // canvas aspect has just flipped) and invalidates everything.
 //
 // safe between frames precisely because light_canvas clears and fully repaints every frame,
-// so rend's usual "set rotation once, before any drawing" caveat does not apply -- there is
+// so light_draw's usual "set rotation once, before any drawing" caveat does not apply -- there is
 // no stale buffer content left to be transformed. do NOT call it from inside a frame, i.e.
 // between light_canvas_frame_begin() and frame_end().
 //
@@ -272,11 +272,11 @@ extern void light_ui_input_activate(struct ui_context *ui);
 //
 // x/y are PANEL coordinates, i.e. the display's own physical frame, which is exactly what a
 // touch controller reports -- pass them through unmodified. light_ui untransforms them into
-// the logical space the widgets live in (rend_untransform_point()), which it can do and the
+// the logical space the widgets live in (light_draw_untransform_point()), which it can do and the
 // caller cannot, since light_ui owns the render context and therefore the rotation.
 //
 // this took logical coordinates before rotation existed, which was indistinguishable from
-// panel coordinates only because every rig ran REND_ROTATE_0. under rotation the two differ,
+// panel coordinates only because every rig ran LIGHT_DRAW_ROTATE_0. under rotation the two differ,
 // and getting it wrong sends taps to the wrong widget -- so the conversion lives here rather
 // than being a rule each application has to remember.
 //
@@ -296,7 +296,7 @@ extern bool light_ui_input_press_at(struct ui_context *ui, uint16_t x, uint16_t 
 //
 //   this exists because a touch controller classifies gestures in the PANEL's frame, which is
 // fixed to the glass, while the user is swiping relative to the interface, which rotates. At
-// REND_ROTATE_0 the two agree and a controller's own "swipe right" is right; at 90 or 270 they
+// LIGHT_DRAW_ROTATE_0 the two agree and a controller's own "swipe right" is right; at 90 or 270 they
 // are perpendicular, so a gesture code taken at face value acts on the wrong axis and appears
 // to work only in one orientation. It is the same mistake light_ui_input_press_at() exists to
 // prevent for taps, and it is solved the same way and in the same place: light_ui owns the

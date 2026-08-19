@@ -16,7 +16,7 @@ extern bool _ui_clip_to_canvas(const struct ui_context *ui, struct ui_rect *r);
 // the render context light_ui draws through. reached via the canvas rather than held
 // directly, so there is one owner of it -- this exists only to keep the chain from being
 // spelled out at every use site in ui_draw.c
-static inline struct rend_context *_ui_render(const struct ui_context *ui)
+static inline struct light_draw_context *_ui_render(const struct ui_context *ui)
 {
         return ui->canvas->render;
 }

@@ -15,7 +15,7 @@ void light_ui_init()
 
 bool _ui_clip_to_canvas(const struct ui_context *ui, struct ui_rect *r)
 {
-        const struct rend_context *render = _ui_render(ui);
+        const struct light_draw_context *render = _ui_render(ui);
         int16_t max_x = (int16_t)render->dim_x - 1;
         int16_t max_y = (int16_t)render->dim_y - 1;
 
@@ -115,7 +115,7 @@ struct ui_button *light_ui_button_create(struct ui_context *ui, struct ui_widget
         btn->on_press = on_press;
         btn->user_data = user_data;
         btn->corner_radius = 0;
-        btn->corners = REND_CORNER_NONE;
+        btn->corners = LIGHT_DRAW_CORNER_NONE;
         _widget_init(&btn->widget, ui, parent, UI_WIDGET_BUTTON, rect, true);
         // the first focusable widget created takes focus, so a two-button rig always has
         // somewhere to start cycling from without the application having to say so
@@ -254,7 +254,7 @@ void light_ui_widget_destroy(struct ui_widget *w)
 // return sends it the other way, which is what makes the two directions distinguishable
 static void _begin_page_move(struct ui_context *ui, bool back)
 {
-        struct rend_context *render = _ui_render(ui);
+        struct light_draw_context *render = _ui_render(ui);
 
         //   nothing to slide before the first page exists, and nowhere to hold the image
         // without a second buffer. A rotation in progress already owns both the back buffer
@@ -270,7 +270,7 @@ static void _begin_page_move(struct ui_context *ui, bool back)
         // orientation. Getting this wrong would slide the page sideways in portrait and
         // vertically in landscape, the same class of mistake as classifying a swipe by its
         // panel-frame direction
-        const rend_transform_t *m = &render->transform;
+        const light_draw_transform_t *m = &render->transform;
         int8_t ux = (m->a > 0) - (m->a < 0);
         int8_t uy = (m->c > 0) - (m->c < 0);
         int8_t sign = back ? 1 : -1;
@@ -391,7 +391,7 @@ void light_ui_window_layout_stack(struct ui_window *win, uint8_t gap)
         // header sits at the TOP of the frame, above where the corner drop puts content, so
         // this is a lower bound on content.y0 rather than something added to it -- adding
         // would push content down twice over for the same corner
-        const rend_font_t *font = _ui_render(win->widget.ui)->font;
+        const light_draw_font_t *font = _ui_render(win->widget.ui)->font;
         if(win->title && font) {
                 int16_t header_bottom = (int16_t)(win->widget.rect.y0 + (win->border ? 1 : 0)
                                 + font->char_height + 2);
@@ -470,7 +470,7 @@ void light_ui_window_layout_stack(struct ui_window *win, uint8_t gap)
                         btn->corner_radius = (last && flush_r > 0) ? (uint8_t)flush_r : 0;
                         // only the two corners that actually touch the container curve; the
                         // top edge is shared with the row above and stays square
-                        btn->corners = (last && flush_r > 0) ? REND_CORNER_BOTTOM : REND_CORNER_NONE;
+                        btn->corners = (last && flush_r > 0) ? LIGHT_DRAW_CORNER_BOTTOM : LIGHT_DRAW_CORNER_NONE;
                 }
                 y = (int16_t)(y + row_h + gap);
         }
@@ -508,7 +508,7 @@ void light_ui_relayout(struct ui_context *ui)
         // since a rotation swaps dim_x and dim_y and leaves every absolute rect describing
         // a canvas that no longer exists. the safe inset comes off all four edges, so a
         // panel that doesn't show its own corners never has content placed in them
-        const struct rend_context *render = _ui_render(ui);
+        const struct light_draw_context *render = _ui_render(ui);
         int16_t inset = (int16_t)ui->safe_inset;
         ui->root->rect = (struct ui_rect) {
                 inset, inset,
@@ -531,9 +531,9 @@ void light_ui_relayout(struct ui_context *ui)
 // the old ones, re-lays-out and repaints everything
 static void _commit_rotation(struct ui_context *ui, uint8_t rotation)
 {
-        struct rend_context *render = _ui_render(ui);
+        struct light_draw_context *render = _ui_render(ui);
 
-        rend_context_set_rotation(render, rotation);
+        light_draw_context_set_rotation(render, rotation);
         // regions accumulated before this point were measured against a canvas whose
         // dimensions have just swapped, so they describe nothing meaningful now -- drop them
         // rather than let them be carried into the next push
@@ -546,7 +546,7 @@ static void _commit_rotation(struct ui_context *ui, uint8_t rotation)
                         rotation, render->dim_x, render->dim_y);
 }
 
-// the shortest signed turn between two REND_ROTATE_* quadrants, in degrees: -90, 0, +90 or
+// the shortest signed turn between two LIGHT_DRAW_ROTATE_* quadrants, in degrees: -90, 0, +90 or
 // 180. going the long way round would animate three quarters of a turn to reach a
 // neighbouring orientation
 static int16_t _rotation_delta_degrees(uint8_t from, uint8_t to)
@@ -559,7 +559,7 @@ static int16_t _rotation_delta_degrees(uint8_t from, uint8_t to)
 
 void light_ui_set_rotation(struct ui_context *ui, uint8_t rotation)
 {
-        struct rend_context *render = _ui_render(ui);
+        struct light_draw_context *render = _ui_render(ui);
         // compared against the target rather than the live rotation: mid-animation the live
         // one is still the OLD value, so without this a repeated orientation report would
         // restart the turn on every tick
@@ -711,17 +711,17 @@ uint8_t light_ui_swipe_direction(struct ui_context *ui, uint16_t start_x, uint16
         // direction being rotated by a table of its own. There is then only one place that
         // knows how panel coordinates relate to logical ones, so the two cannot drift apart --
         // and a swipe is classified in exactly the frame the user made it in
-        rend_point2d a = rend_untransform_point(_ui_render(ui),
-                                        (rend_point2d) { start_x, start_y });
-        rend_point2d b = rend_untransform_point(_ui_render(ui),
-                                        (rend_point2d) { end_x, end_y });
+        light_draw_point2d a = light_draw_untransform_point(_ui_render(ui),
+                                        (light_draw_point2d) { start_x, start_y });
+        light_draw_point2d b = light_draw_untransform_point(_ui_render(ui),
+                                        (light_draw_point2d) { end_x, end_y });
 
         int32_t dx = (int32_t)b.x - (int32_t)a.x;
         int32_t dy = (int32_t)b.y - (int32_t)a.y;
         int32_t adx = dx < 0 ? -dx : dx;
         int32_t ady = dy < 0 ? -dy : dy;
 
-        //   no movement in either axis. rend_untransform_point() clamps to the canvas, so this
+        //   no movement in either axis. light_draw_untransform_point() clamps to the canvas, so this
         // also covers a swipe whose ends both landed off the same edge -- a real possibility
         // where the touch panel's coordinate range is wider than the display's
         if(!adx && !ady)
@@ -758,7 +758,7 @@ bool light_ui_input_press_at(struct ui_context *ui, uint16_t x, uint16_t y)
         // the caller hands us the panel's own coordinates; widgets live in logical space,
         // and under rotation those are different points. doing this here rather than in
         // every application is the whole reason light_ui owns the render context
-        rend_point2d logical = rend_untransform_point(_ui_render(ui), (rend_point2d) { x, y });
+        light_draw_point2d logical = light_draw_untransform_point(_ui_render(ui), (light_draw_point2d) { x, y });
         x = logical.x;
         y = logical.y;
 
@@ -823,7 +823,7 @@ void light_ui_label_set_text(struct ui_label *lbl, const uint8_t *text)
 // real rotation has been applied, so the caller knows an ordinary repaint is due
 static bool _render_rotation_step(struct ui_context *ui)
 {
-        struct rend_context *render = _ui_render(ui);
+        struct light_draw_context *render = _ui_render(ui);
         uint32_t elapsed = light_platform_get_time_since_init() - ui->rotate_start_ms;
         bool final = elapsed >= ui->rotate_duration_ms;
 
@@ -839,8 +839,8 @@ static bool _render_rotation_step(struct ui_context *ui)
                 // shrink to whatever still fits: a rectangle turned off-axis needs a bigger
                 // box than the one it came from, so at 1:1 the corners would be sliced off
                 // for most of the turn
-                rend_blit_rotated(render, render->buffer_back,
-                                angle, rend_scale_inscribed(render, angle));
+                light_draw_blit_rotated(render, render->buffer_back,
+                                angle, light_draw_scale_inscribed(render, angle));
 
                 light_canvas_invalidate_all(ui->canvas);
                 light_canvas_frame_end(ui->canvas);
@@ -859,7 +859,7 @@ static bool _render_rotation_step(struct ui_context *ui)
 // an ordinary repaint is due -- the same contract as _render_rotation_step()
 static bool _render_page_step(struct ui_context *ui)
 {
-        struct rend_context *render = _ui_render(ui);
+        struct light_draw_context *render = _ui_render(ui);
         uint32_t elapsed = light_platform_get_time_since_init() - ui->page_move_start_ms;
 
         if(elapsed >= ui->page_move_duration_ms) {
@@ -884,7 +884,7 @@ static bool _render_page_step(struct ui_context *ui)
                 return false;
 
         //   the incoming page first, as an ordinary repaint of the live tree, then the
-        // outgoing image over the top of it. rend_blit_offset() leaves the band it no longer
+        // outgoing image over the top of it. light_draw_blit_offset() leaves the band it no longer
         // covers untouched, so what shows through there is the new page already drawn beneath
         if(ui->root)
                 _ui_paint_widget(ui, ui->root);
@@ -893,7 +893,7 @@ static bool _render_page_step(struct ui_context *ui)
         // enough that an eased curve is below what the eye resolves
         int32_t travel = ((int32_t)ui->page_move_span * (int32_t)elapsed)
                         / (int32_t)ui->page_move_duration_ms;
-        rend_blit_offset(render, render->buffer_back,
+        light_draw_blit_offset(render, render->buffer_back,
                         (int32_t)ui->page_move_dx * travel, (int32_t)ui->page_move_dy * travel);
 
         light_canvas_invalidate_all(ui->canvas);

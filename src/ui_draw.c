@@ -5,18 +5,18 @@
 #include <string.h>
 
 // draws `text` at (x, y) truncated to fit both max_width and the canvas, in whatever
-// rend's color_fg currently is.
+// light_draw's color_fg currently is.
 //
-// rend_draw_text() neither clips nor bounds its width -- it walks glyphs off the end of the
+// light_draw_draw_text() neither clips nor bounds its width -- it walks glyphs off the end of the
 // canvas straight into _set_pixel(), which for anything past the buffer is an out-of-bounds
 // write, not just a cosmetic overflow. so the fit has to be computed here. fonts are
-// fixed-pitch (rend_font_t has a single char_width), which makes that arithmetic rather
+// fixed-pitch (light_draw_font_t has a single char_width), which makes that arithmetic rather
 // than a measurement pass
 static void _draw_text_fitted(struct ui_context *ui, int16_t x, int16_t y,
                                 const uint8_t *text, int16_t max_width)
 {
-        rend_context_t *render = _ui_render(ui);
-        const rend_font_t *font = render->font;
+        light_draw_context_t *render = _ui_render(ui);
+        const light_draw_font_t *font = render->font;
         if(!font || !text || !font->char_width)
                 return;
         // a glyph row is drawn from its top-left corner downward and rightward, and there
@@ -41,11 +41,11 @@ static void _draw_text_fitted(struct ui_context *ui, int16_t x, int16_t y,
         uint8_t buf[LIGHT_UI_TEXT_MAX];
         memcpy(buf, text, len);
         buf[len] = '\0';
-        rend_draw_text(render, (rend_point2d) { (uint16_t)x, (uint16_t)y }, buf);
+        light_draw_draw_text(render, (light_draw_point2d) { (uint16_t)x, (uint16_t)y }, buf);
 }
 
 // horizontally centres a string of `len` glyphs within [x0, x1], never left of x0
-static int16_t _centre_x(const rend_font_t *font, int16_t x0, int16_t x1, size_t len)
+static int16_t _centre_x(const light_draw_font_t *font, int16_t x0, int16_t x1, size_t len)
 {
         int32_t avail = (int32_t)x1 - x0 + 1;
         int32_t used = (int32_t)len * font->char_width;
@@ -60,20 +60,20 @@ static void _paint_window(struct ui_context *ui, struct ui_window *win)
         if(!_ui_clip_to_canvas(ui, &r))
                 return;
 
-        rend_context_t *render = _ui_render(ui);
+        light_draw_context_t *render = _ui_render(ui);
         if(win->border) {
                 if(win->corner_radius)
-                        rend_draw_rect_rounded(render,
-                                (rend_point2d) { (uint16_t)r.x0, (uint16_t)r.y0 },
-                                (rend_point2d) { (uint16_t)r.x1, (uint16_t)r.y1 },
+                        light_draw_draw_rect_rounded(render,
+                                (light_draw_point2d) { (uint16_t)r.x0, (uint16_t)r.y0 },
+                                (light_draw_point2d) { (uint16_t)r.x1, (uint16_t)r.y1 },
                                 win->corner_radius, false);
                 else
-                        rend_draw_rect(render,
-                                (rend_point2d) { (uint16_t)r.x0, (uint16_t)r.y0 },
-                                (rend_point2d) { (uint16_t)r.x1, (uint16_t)r.y1 }, false);
+                        light_draw_draw_rect(render,
+                                (light_draw_point2d) { (uint16_t)r.x0, (uint16_t)r.y0 },
+                                (light_draw_point2d) { (uint16_t)r.x1, (uint16_t)r.y1 }, false);
         }
 
-        const rend_font_t *font = render->font;
+        const light_draw_font_t *font = render->font;
         if(!win->title || !font)
                 return;
 
@@ -101,9 +101,9 @@ static void _paint_window(struct ui_context *ui, struct ui_window *win)
         int16_t sep_indent = _ui_corner_indent(win,
                         (int16_t)(win->corner_radius - (sep_y - r.y0)));
         if(sep_y <= r.y1 && sep_y >= 0)
-                rend_draw_line(render,
-                        (rend_point2d) { (uint16_t)(r.x0 + sep_indent + inset), (uint16_t)sep_y },
-                        (rend_point2d) { (uint16_t)(r.x1 - sep_indent - inset), (uint16_t)sep_y }, true);
+                light_draw_draw_line(render,
+                        (light_draw_point2d) { (uint16_t)(r.x0 + sep_indent + inset), (uint16_t)sep_y },
+                        (light_draw_point2d) { (uint16_t)(r.x1 - sep_indent - inset), (uint16_t)sep_y }, true);
 }
 
 static void _paint_button(struct ui_context *ui, struct ui_button *btn)
@@ -112,26 +112,26 @@ static void _paint_button(struct ui_context *ui, struct ui_button *btn)
         if(!_ui_clip_to_canvas(ui, &r))
                 return;
 
-        rend_context_t *render = _ui_render(ui);
+        light_draw_context_t *render = _ui_render(ui);
         bool focused = ui->focused == &btn->widget;
 
-        rend_point2d p0 = { (uint16_t)r.x0, (uint16_t)r.y0 };
-        rend_point2d p1 = { (uint16_t)r.x1, (uint16_t)r.y1 };
+        light_draw_point2d p0 = { (uint16_t)r.x0, (uint16_t)r.y0 };
+        light_draw_point2d p1 = { (uint16_t)r.x1, (uint16_t)r.y1 };
 
-        // rend's draw calls take a const context but read color_fg from it, and there is no
+        // light_draw's draw calls take a const context but read color_fg from it, and there is no
         // per-call colour argument -- so inverting the focused button means swapping the
         // context's own colours around the calls and putting them back. works uniformly for
         // 1bpp and RGB565, since both go through the same _set_pixel() colour path
         uint16_t saved_fg = render->color_fg;
         if(btn->corner_radius)
-                rend_draw_rect_rounded_corners(render, p0, p1,
+                light_draw_draw_rect_rounded_corners(render, p0, p1,
                                 btn->corner_radius, btn->corners, focused);
         else
-                rend_draw_rect(render, p0, p1, focused);
+                light_draw_draw_rect(render, p0, p1, focused);
         if(focused)
                 render->color_fg = render->color_bg;
 
-        const rend_font_t *font = render->font;
+        const light_draw_font_t *font = render->font;
         if(font && btn->label) {
                 // the border occupies the outermost pixel ring; the label goes inside it
                 int16_t inner_x0 = r.x0 + 1, inner_x1 = r.x1 - 1;
@@ -145,7 +145,7 @@ static void _paint_button(struct ui_context *ui, struct ui_button *btn)
         }
 
         render->color_fg = saved_fg;
-        // TODO give disabled buttons a distinct appearance. rend_draw_line() accepts a
+        // TODO give disabled buttons a distinct appearance. light_draw_draw_line() accepts a
         // `solid` flag but ignores it, so there is no dashed border to reach for yet, and
         // anything else (greyed text) needs a colour model this 1bpp path doesn't have
 }

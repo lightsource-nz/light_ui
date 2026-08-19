@@ -24,6 +24,6 @@ target_link_libraries(
         light_ui INTERFACE
         light_canvas
         light_display
-        rend
+        light_draw
         light_core
 )
