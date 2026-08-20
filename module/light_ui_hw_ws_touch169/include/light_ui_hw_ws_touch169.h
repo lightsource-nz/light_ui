@@ -1,5 +1,5 @@
-#ifndef _SCREENTEST_HW_WS_TOUCH169_H
-#define _SCREENTEST_HW_WS_TOUCH169_H
+#ifndef _LIGHT_UI_HW_WS_TOUCH169_H
+#define _LIGHT_UI_HW_WS_TOUCH169_H
 
 #include <light_backlight.h>
 #include <light_display.h>
@@ -125,7 +125,7 @@
 
 // the passive piezo buzzer, driven as a PWM output (see light_audio). read off the board
 // schematic rather than guessed -- leaving this undefined is the safe default, and
-// screentest_hw_ws_touch169_audio() returns NULL when it is, on the same terms as a board
+// light_ui_hw_ws_touch169_audio() returns NULL when it is, on the same terms as a board
 // with no backlight.
 //
 // its PWM slice is deliberately not the backlight's. slices are shared between pin pairs, so
@@ -135,11 +135,11 @@
 // future clash shows up at init rather than as a mystery
 #define ST_AUDIO_PIN_BUZZER             2
 
-extern struct display_device *screentest_hw_ws_touch169_display(void);
-extern struct touch_device *screentest_hw_ws_touch169_touch(void);
-extern struct imu_device *screentest_hw_ws_touch169_imu(void);
-extern struct backlight_device *screentest_hw_ws_touch169_backlight(void);
+extern struct display_device *light_ui_hw_ws_touch169_display(void);
+extern struct touch_device *light_ui_hw_ws_touch169_touch(void);
+extern struct imu_device *light_ui_hw_ws_touch169_imu(void);
+extern struct backlight_device *light_ui_hw_ws_touch169_backlight(void);
 // NULL until ST_AUDIO_PIN_BUZZER is defined above
-extern struct audio_device *screentest_hw_ws_touch169_audio(void);
+extern struct audio_device *light_ui_hw_ws_touch169_audio(void);
 
 #endif

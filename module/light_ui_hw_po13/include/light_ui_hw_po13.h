@@ -1,5 +1,5 @@
-#ifndef _SCREENTEST_HW_PO13_H
-#define _SCREENTEST_HW_PO13_H
+#ifndef _LIGHT_UI_HW_PO13_H
+#define _LIGHT_UI_HW_PO13_H
 
 #include <light_display.h>
 #include <light_display_po13.h>
@@ -32,10 +32,10 @@
 #define ST_BUTTON_PIN_KEY1              17
 
 // main panel: the Pico-OLED-1.3 itself, on its own board-default pins over spi1
-extern struct display_device *screentest_hw_po13_display_main(void);
+extern struct display_device *light_ui_hw_po13_display_main(void);
 // secondary panel: a bare SH1107 of the same geometry on spi0. separate from the main
 // panel's constructor so an app that wants one display doesn't get the second one wired up
 // (and doesn't lose GP17 to it -- see the key-pin note above)
-extern struct display_device *screentest_hw_po13_display_sec(void);
+extern struct display_device *light_ui_hw_po13_display_sec(void);
 
 #endif

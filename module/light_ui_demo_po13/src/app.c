@@ -1,5 +1,5 @@
 #include <light_ui_demo.h>
-#include <screentest_hw_po13.h>
+#include <light_ui_hw_po13.h>
 #include <light_button.h>
 #include <module/mod_light_button.h>
 #include <module/mod_light_display.h>
@@ -11,7 +11,7 @@
 // keys: KEY0 cycles focus through the buttons, KEY1 activates the focused one.
 //
 // single-display, unlike the circle demo on the same board: the secondary SH1107 panel's
-// CS line is GP17, which is also KEY1 (see screentest_hw_po13.h). the board can drive the
+// CS line is GP17, which is also KEY1 (see light_ui_hw_po13.h). the board can drive the
 // second panel or read the second key, not both -- and this app is the one that needs keys
 //
 // its light_ui_demo_config.h is empty: light_ui_demo_common's defaults (64x128, 1bpp,
@@ -46,7 +46,7 @@ const light_draw_font_t *__light_ui_demo_font(void)
 
 void __light_ui_demo_hardware_init(void)
 {
-        _display[0] = screentest_hw_po13_display_main();
+        _display[0] = light_ui_hw_po13_display_main();
 
         // both keys are wired to ground through the switch with no external pull, so
         // active_low with the internal pull-up is the correct configuration

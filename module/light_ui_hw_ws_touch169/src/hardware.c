@@ -1,4 +1,4 @@
-#include <screentest_hw_ws_touch169.h>
+#include <light_ui_hw_ws_touch169.h>
 #include <light_audio.h>
 #include <light_backlight.h>
 #include <light_display_st7789.h>
@@ -12,7 +12,7 @@
 // no direct hardware includes any more: the backlight was the last thing this file drove as
 // a raw GPIO, and light_backlight owns that pin now
 
-struct display_device *screentest_hw_ws_touch169_display(void)
+struct display_device *light_ui_hw_ws_touch169_display(void)
 {
         struct io_context *io = light_ioport_setup_io_spi_4p(
                 PORT_SPI_1,
@@ -53,7 +53,7 @@ struct display_device *screentest_hw_ws_touch169_display(void)
         return disp;
 }
 
-struct touch_device *screentest_hw_ws_touch169_touch(void)
+struct touch_device *light_ui_hw_ws_touch169_touch(void)
 {
         // shared I2C1 bus (also used by IMU/RTC, not yet implemented) -- setup_io_i2c
         // re-inits the same peripheral each time it's called, harmless as long as the
@@ -68,7 +68,7 @@ struct touch_device *screentest_hw_ws_touch169_touch(void)
         return touch;
 }
 
-struct backlight_device *screentest_hw_ws_touch169_backlight(void)
+struct backlight_device *light_ui_hw_ws_touch169_backlight(void)
 {
         // the backlight is a plain pin rather than anything the ST7789 knows about, which is
         // why it was driven straight from here as an on/off GPIO before light_backlight
@@ -77,7 +77,7 @@ struct backlight_device *screentest_hw_ws_touch169_backlight(void)
                 "screentest_backlight_main", ST_DISPLAY_PIN_BL, false);
 }
 
-struct audio_device *screentest_hw_ws_touch169_audio(void)
+struct audio_device *light_ui_hw_ws_touch169_audio(void)
 {
 #ifdef ST_AUDIO_PIN_BUZZER
         return light_audio_pwm_create_device("screentest_audio_main", ST_AUDIO_PIN_BUZZER);
@@ -89,7 +89,7 @@ struct audio_device *screentest_hw_ws_touch169_audio(void)
 #endif
 }
 
-struct imu_device *screentest_hw_ws_touch169_imu(void)
+struct imu_device *light_ui_hw_ws_touch169_imu(void)
 {
         // its own io_context despite sharing the bus with the touch controller: an
         // io_context carries the target's I2C address, and these two answer to different

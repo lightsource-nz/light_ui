@@ -1,18 +1,18 @@
 
-add_library(screentest_hw_ws_touch169 INTERFACE)
+add_library(light_ui_hw_ws_touch169 INTERFACE)
 
 target_include_directories(
-        screentest_hw_ws_touch169 INTERFACE
+        light_ui_hw_ws_touch169 INTERFACE
         ${CMAKE_CURRENT_LIST_DIR}/include
 )
 
 target_sources(
-        screentest_hw_ws_touch169 INTERFACE
+        light_ui_hw_ws_touch169 INTERFACE
         ${CMAKE_CURRENT_LIST_DIR}/src/hardware.c
 )
 
 target_link_libraries(
-        screentest_hw_ws_touch169 INTERFACE
+        light_ui_hw_ws_touch169 INTERFACE
         light_audio
         light_backlight
         light_display

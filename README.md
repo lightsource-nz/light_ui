@@ -33,8 +33,8 @@ widget-toolkit module share a name -- see the note in CMakeLists.txt.
   console command tree, driven identically by touch or buttons
 - `module/light_ui_demo_touch169`, `module/light_ui_demo_po13` -- the demo on the Waveshare
   RP2350-Touch-LCD-1.69 and on the Pico-OLED-1.3 button rig
-- `module/screentest_hw_ws_touch169`, `module/screentest_hw_po13` -- those boards' wiring
-  (pins, device construction), named as screen-test's bring-up apps know them
+- `module/light_ui_hw_ws_touch169`, `module/light_ui_hw_po13` -- those boards' wiring
+  (pins, device construction), shared with screen-test's bring-up apps
 
 ## Building the demos
 

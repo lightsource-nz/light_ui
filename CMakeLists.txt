@@ -94,13 +94,13 @@ add_subdirectory(module/light_ui_demo_common)
 # are for one integrated board and are guarded on exactly its PICO_BOARD -- see the moved
 # modules' history in screen-test for the link failure that taught that distinction
 if(LIGHT_SYSTEM STREQUAL PICO_SDK)
-        add_subdirectory(module/screentest_hw_po13)
+        add_subdirectory(module/light_ui_hw_po13)
         if(_LIGHT_UI_STANDALONE)
                 add_subdirectory(module/light_ui_demo_po13)
         endif()
 
         if(PICO_BOARD STREQUAL waveshare_rp2350_touch_lcd_1.69)
-                add_subdirectory(module/screentest_hw_ws_touch169)
+                add_subdirectory(module/light_ui_hw_ws_touch169)
                 if(_LIGHT_UI_STANDALONE)
                         add_subdirectory(module/light_ui_demo_touch169)
                 endif()

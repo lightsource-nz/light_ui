@@ -22,7 +22,7 @@ target_sources(
 target_link_libraries(
         light_ui_demo_touch169 PUBLIC
         light_ui_demo_common
-        screentest_hw_ws_touch169
+        light_ui_hw_ws_touch169
         light_ui_demo_touch169_font
         light_ui
         light_touch

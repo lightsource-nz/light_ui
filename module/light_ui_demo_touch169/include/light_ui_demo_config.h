@@ -2,7 +2,7 @@
 #define _LIGHT_UI_DEMO_CONFIG_H
 
 // board pinout and device construction (ST_DISPLAY_*, ST_TOUCH_*, ST_IMU_*)
-#include <screentest_hw_ws_touch169.h>
+#include <light_ui_hw_ws_touch169.h>
 
 // ONLY what this board does differently from light_ui_demo_common's defaults. the idle backlight
 // behaviour, frame rate and title are all shared, so changing one is a single edit

@@ -1,17 +1,17 @@
-#include <screentest_hw_po13.h>
+#include <light_ui_hw_po13.h>
 #include <light_display_sh1107.h>
 
 // board: Waveshare Pico-OLED-1.3 ("po13"), optionally with a second bare SH1107 panel of
 // the same geometry wired to spi0. moved here verbatim from screentest_po13's app.c so the
 // UI demo app can build against the same board without copying it
 
-struct display_device *screentest_hw_po13_display_main(void)
+struct display_device *light_ui_hw_po13_display_main(void)
 {
         struct io_context *io = light_display_po13_setup_io_spi_4p(PORT_SPI_1);
         return light_display_po13_create_device("screentest_display_main", io);
 }
 
-struct display_device *screentest_hw_po13_display_sec(void)
+struct display_device *light_ui_hw_po13_display_sec(void)
 {
         struct io_context *io = light_ioport_setup_io_spi_4p(
                         PORT_SPI_0,

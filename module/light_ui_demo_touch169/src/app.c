@@ -71,13 +71,13 @@ const light_draw_font_t *__light_ui_demo_font(void)
 
 void __light_ui_demo_hardware_init(void)
 {
-        _display[0] = screentest_hw_ws_touch169_display();
-        _touch_main = screentest_hw_ws_touch169_touch();
-        _imu_main = screentest_hw_ws_touch169_imu();
-        _backlight_main = screentest_hw_ws_touch169_backlight();
+        _display[0] = light_ui_hw_ws_touch169_display();
+        _touch_main = light_ui_hw_ws_touch169_touch();
+        _imu_main = light_ui_hw_ws_touch169_imu();
+        _backlight_main = light_ui_hw_ws_touch169_backlight();
         // NULL until the board header names the buzzer's pin, which every use in the shared
         // demo already guards for
-        _audio_main = screentest_hw_ws_touch169_audio();
+        _audio_main = light_ui_hw_ws_touch169_audio();
 }
 
 // keeps the interface upright as the board is turned. light_ui knows nothing about IMUs --

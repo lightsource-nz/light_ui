@@ -24,7 +24,7 @@ target_sources(
 target_link_libraries(
         light_ui_demo_po13 PUBLIC
         light_ui_demo_common
-        screentest_hw_po13
+        light_ui_hw_po13
         light_ui_demo_po13_font
         light_button
         light_ui
