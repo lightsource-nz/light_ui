@@ -104,24 +104,30 @@ static void _paint_window(struct ui_context *ui, struct ui_window *win,
         // costs a few characters of a line that has room to spare, where dropping the header
         // below the curve would cost a band the depth of the radius across the whole window.
         // the indent is taken at the title's TOP row because that is where the arc is furthest
-        // in -- clearing that clears every row beneath it
+        // in -- clearing that clears every row beneath it.
+        //   positioned from the TRUE rect, like every label: the header belongs to the frame's
+        // real geometry, not to whatever part of it happens to be on-canvas
+        const struct ui_rect *f = &win->widget.rect;
         int16_t inset = win->border ? 1 : 0;
-        int16_t ty = r.y0 + inset;
+        int16_t ty = f->y0 + inset;
         int16_t indent = _ui_corner_indent(win, (int16_t)(win->corner_radius - inset));
-        int16_t tx = r.x0 + indent + inset + 1;
+        int16_t tx = f->x0 + indent + inset + 1;
         // the top-RIGHT arc mirrors the top-left one, so the line the title has to fit in is
         // shortened at both ends
-        _draw_text_fitted(ui, tx, ty, win->title, (r.x1 - indent - inset) - tx + 1);
+        _draw_text_fitted(ui, tx, ty, win->title, (f->x1 - indent - inset) - tx + 1);
 
         // the separator sits char_height lower, where the arc has already come most of the
-        // way back out -- so it gets its own, much smaller, indent rather than the title's
+        // way back out -- so it gets its own, much smaller, indent rather than the title's.
+        // its x endpoints are non-negative whenever the left one is, and the unsigned draw
+        // coordinates need exactly that guard
         int16_t sep_y = ty + font->char_height;
         int16_t sep_indent = _ui_corner_indent(win,
-                        (int16_t)(win->corner_radius - (sep_y - r.y0)));
-        if(sep_y <= r.y1 && sep_y >= 0)
+                        (int16_t)(win->corner_radius - (sep_y - f->y0)));
+        int16_t sep_x0 = (int16_t)(f->x0 + sep_indent + inset);
+        if(sep_y <= f->y1 && sep_y >= 0 && sep_x0 >= 0)
                 light_draw_draw_line(render,
-                        (light_draw_point2d) { (uint16_t)(r.x0 + sep_indent + inset), (uint16_t)sep_y },
-                        (light_draw_point2d) { (uint16_t)(r.x1 - sep_indent - inset), (uint16_t)sep_y }, true);
+                        (light_draw_point2d) { (uint16_t)sep_x0, (uint16_t)sep_y },
+                        (light_draw_point2d) { (uint16_t)(f->x1 - sep_indent - inset), (uint16_t)sep_y }, true);
 }
 
 static void _paint_button(struct ui_context *ui, struct ui_button *btn,
@@ -153,14 +159,19 @@ static void _paint_button(struct ui_context *ui, struct ui_button *btn,
 
         const light_draw_font_t *font = render->font;
         if(font && btn->label) {
-                // the border occupies the outermost pixel ring; the label goes inside it
-                int16_t inner_x0 = r.x0 + 1, inner_x1 = r.x1 - 1;
-                int16_t inner_h = r.y1 - r.y0 - 1;
+                //   positioned from the TRUE rect, never the draw-clamped one: the clamp only
+                // exists to keep the unsigned draw coordinates from wrapping at the CANVAS
+                // edges, and centring against it made a label creep as its row crossed them --
+                // a widget's geometry does not change because part of it is off-screen. a
+                // position the clip (or the canvas) cannot show is simply not drawn
+                const struct ui_rect *f = &btn->widget.rect;
+                int16_t inner_x0 = f->x0 + 1, inner_x1 = f->x1 - 1;
+                int16_t inner_h = f->y1 - f->y0 - 1;
                 size_t len = strlen((const char *)btn->label);
                 int16_t tx = _centre_x(font, inner_x0, inner_x1, len);
-                int16_t ty = (int16_t)(r.y0 + 1 + (inner_h - font->char_height) / 2);
-                if(ty < r.y0 + 1)
-                        ty = r.y0 + 1;
+                int16_t ty = (int16_t)(f->y0 + 1 + (inner_h - font->char_height) / 2);
+                if(ty < f->y0 + 1)
+                        ty = f->y0 + 1;
                 _draw_text_fitted(ui, tx, ty, btn->label, inner_x1 - inner_x0 + 1);
         }
 
@@ -176,8 +187,10 @@ static void _paint_label(struct ui_context *ui, struct ui_label *lbl,
         struct ui_rect visible = lbl->widget.rect;
         if(!_ui_rect_intersect(&visible, clip))
                 return;
-        struct ui_rect r = _draw_rect_of(ui, lbl->widget.rect);
-        _draw_text_fitted(ui, r.x0, r.y0, lbl->text, r.x1 - r.x0 + 1);
+        // the TRUE origin, for the same reason a button's label uses it -- a clamped origin
+        // pinned scrolled-off labels to the canvas edge, moving them relative to their row
+        _draw_text_fitted(ui, lbl->widget.rect.x0, lbl->widget.rect.y0, lbl->text,
+                        lbl->widget.rect.x1 - lbl->widget.rect.x0 + 1);
 }
 
 //   `clip` is passed BY VALUE so each subtree narrows its own copy: a scrolling window's
@@ -219,8 +232,19 @@ static void _paint_clipped(struct ui_context *ui, struct ui_widget *w, struct ui
         // and title were drawn against the WIDER clip above, which is what keeps the frame
         // visible while content moves beneath it -- the frame is not content and does not scroll
         if(w->type == UI_WIDGET_WINDOW && to_ui_window(w)->scroll) {
+                struct ui_window *sw = to_ui_window(w);
                 struct ui_rect vp;
-                _ui_window_viewport(to_ui_window(w), &vp);
+                _ui_window_viewport(sw, &vp);
+                //   the content region runs to the scroll STOP for every row, not only the
+                // last: a row straddling the bottom must paint into the corner band, or the
+                // list visibly ends at an invisible line whenever the bottom row is somewhere
+                // else. The cost is a square row's corners briefly crossing the frame's arc
+                // pixels as it passes -- accepted, because a full-bleed list reads right and a
+                // guarded arc over a truncated list does not. (still bounded by the walk's own
+                // clip, so a nested window never escapes its parent)
+                int16_t stop = _ui_window_scroll_stop_y1(sw);
+                if(stop > vp.y1)
+                        vp.y1 = stop;
                 if(!_ui_rect_intersect(&clip, &vp))
                         return;
         }

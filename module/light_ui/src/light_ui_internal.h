@@ -105,4 +105,15 @@ static inline bool _ui_rect_intersect(struct ui_rect *r, const struct ui_rect *c
 // allowed to be
 extern void _ui_window_viewport(const struct ui_window *win, struct ui_rect *out);
 
+//   where a vertical-scrolling stack's TRAVEL ends: the last row comes to rest at the same
+// bottom edge the non-scroll flush case uses (rect.y1 - inset_x), not at the viewport's. The
+// viewport bottom exists to keep ORDINARY square rows off the frame's corner arcs; the last
+// row's permanently rounded corners are what let it, alone, ride into that band and sit flush
+// with the frame. Returns the plain viewport bottom for anything that earns no corner
+// treatment, so every caller can use it unconditionally
+extern int16_t _ui_window_scroll_stop_y1(const struct ui_window *win);
+
+// the last visible child, or NULL -- the one row whose paint/hit clip admits the corner band
+extern struct ui_widget *_ui_window_last_child(const struct ui_window *win);
+
 #endif

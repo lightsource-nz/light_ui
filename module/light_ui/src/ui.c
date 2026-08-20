@@ -431,6 +431,29 @@ void _ui_window_viewport(const struct ui_window *win, struct ui_rect *out)
         *out = content;
 }
 
+// see the declaration in light_ui_internal.h for what these two are for
+int16_t _ui_window_scroll_stop_y1(const struct ui_window *win)
+{
+        struct ui_rect vp;
+        _ui_window_viewport(win, &vp);
+        if(win->layout != UI_LAYOUT_STACK || !(win->scroll & UI_SCROLL_VERTICAL))
+                return vp.y1;
+        int16_t inset_x = _ui_window_inset_x(win);
+        if((int16_t)win->corner_radius - inset_x <= 0)
+                return vp.y1;
+        int16_t stop = (int16_t)(win->widget.rect.y1 - inset_x);
+        return stop > vp.y1 ? stop : vp.y1;
+}
+struct ui_widget *_ui_window_last_child(const struct ui_window *win)
+{
+        struct ui_widget *last = NULL;
+        for(struct ui_widget *c = win->widget.first_child; c; c = c->next_sibling) {
+                if(c->visible)
+                        last = c;
+        }
+        return last;
+}
+
 // a stacked row's height and width once its widget's constraints have had their say. min wins
 // over max where they conflict -- a widget too small to use is the worse failure
 static int32_t _stack_row_height(const struct ui_widget *c, int32_t row_h)
@@ -485,6 +508,16 @@ void light_ui_window_layout_stack(struct ui_window *win, uint8_t gap)
         if(flush_r > 0)
                 content.y1 = (int16_t)(win->widget.rect.y1 - inset_x);
 
+        //   what a scrolling stack gets instead: the last row wears rounded bottom corners
+        // PERMANENTLY, at its ordinary geometry -- mid-scroll they read as the list's end cap,
+        // and when the clamp lands the row at the bottom stop they sit visually flush with the
+        // container's curve. Deliberately NOT a state that changes with the scroll position:
+        // an earlier version granted the full flush geometry only at the stop, and the row
+        // visibly jumped as its rect grew and the label recentred
+        int16_t cap_r = scroll_v ? (int16_t)win->corner_radius - inset_x : 0;
+        if(cap_r < 0)
+                cap_r = 0;
+
         uint16_t count = 0;
         for(struct ui_widget *c = win->widget.first_child; c; c = c->next_sibling) {
                 if(c->visible)
@@ -535,7 +568,11 @@ void light_ui_window_layout_stack(struct ui_window *win, uint8_t gap)
         win->content_h = content_h > INT16_MAX ? INT16_MAX : (int16_t)content_h;
         win->content_w = content_w > INT16_MAX ? INT16_MAX : (int16_t)content_w;
 
-        int32_t max_sy = content_h - total_h;
+        //   vertical travel is measured to the scroll STOP, not the viewport bottom: for a
+        // stack whose last row wears the corner treatment the stop sits at the flush edge
+        // (rect.y1 - inset_x), so the list comes to rest against the frame rather than a
+        // corner-clearance band above it -- see _ui_window_scroll_stop_y1()
+        int32_t max_sy = content_h - ((int32_t)_ui_window_scroll_stop_y1(win) - content.y0 + 1);
         int32_t max_sx = content_w - viewport_w;
         if(!scroll_v || max_sy < 0)
                 max_sy = 0;
@@ -593,10 +630,18 @@ void light_ui_window_layout_stack(struct ui_window *win, uint8_t gap)
 
                 if(c->type == UI_WIDGET_BUTTON) {
                         struct ui_button *btn = to_ui_button(c);
-                        btn->corner_radius = (last && flush_r > 0) ? (uint8_t)flush_r : 0;
+                        int16_t r = 0;
+                        if(last && flush_r > 0)
+                                r = flush_r;
+                        // the scrolling end cap wants the same tallness rule the flush
+                        // withdrawal applies: a row shorter than its radius cannot contain
+                        // the curve
+                        else if(last && cap_r > 0 && h >= cap_r)
+                                r = cap_r;
+                        btn->corner_radius = (uint8_t)r;
                         // only the two corners that actually touch the container curve; the
                         // top edge is shared with the row above and stays square
-                        btn->corners = (last && flush_r > 0) ? LIGHT_DRAW_CORNER_BOTTOM : LIGHT_DRAW_CORNER_NONE;
+                        btn->corners = r > 0 ? LIGHT_DRAW_CORNER_BOTTOM : LIGHT_DRAW_CORNER_NONE;
                 }
                 // advance by THIS row's height: constraints make rows individually sized now,
                 // and stepping by the shared row_h would overlap a row with a taller
@@ -670,8 +715,9 @@ bool light_ui_window_scroll_to(struct ui_window *win, int16_t x, int16_t y)
         // entire safety argument for scrolling -- everything else is a rect shift
         int32_t max_sx = (win->scroll & UI_SCROLL_HORIZONTAL)
                         ? (int32_t)win->content_w - (vp.x1 - vp.x0 + 1) : 0;
+        // to the scroll stop, not vp.y1 -- the same travel the layout clamp measures
         int32_t max_sy = (win->scroll & UI_SCROLL_VERTICAL)
-                        ? (int32_t)win->content_h - (vp.y1 - vp.y0 + 1) : 0;
+                        ? (int32_t)win->content_h - ((int32_t)_ui_window_scroll_stop_y1(win) - vp.y0 + 1) : 0;
         if(max_sx < 0) max_sx = 0;
         if(max_sy < 0) max_sy = 0;
         int16_t nx = x < 0 ? 0 : (x > max_sx ? (int16_t)max_sx : x);
@@ -721,6 +767,10 @@ void light_ui_scroll_into_view(struct ui_widget *w)
                         continue;
                 struct ui_rect vp;
                 _ui_window_viewport(win, &vp);
+                //   the last row's "in view" reaches to the scroll stop, so focusing it rides
+                // it down flush against the frame -- the same place a drag leaves it
+                if(w == _ui_window_last_child(win))
+                        vp.y1 = _ui_window_scroll_stop_y1(win);
                 //   as little as brings it in: the far edge first, then the near edge
                 // overrides -- so a widget TALLER than the viewport shows its top, which is
                 // where reading starts
@@ -1045,8 +1095,14 @@ static struct ui_widget *_hit_test(struct ui_widget *w, struct ui_rect clip,
         if(_is_focusable(w) && _ui_rect_contains(&clip, x, y) && _ui_widget_hit(w, x, y))
                 best = w;
         if(w->type == UI_WIDGET_WINDOW && to_ui_window(w)->scroll) {
+                struct ui_window *sw = to_ui_window(w);
                 struct ui_rect vp;
-                _ui_window_viewport(to_ui_window(w), &vp);
+                _ui_window_viewport(sw, &vp);
+                //   to the scroll stop, matching the paint walk exactly: whatever can be seen
+                // in the corner band must respond there -- see _paint_clipped()
+                int16_t stop = _ui_window_scroll_stop_y1(sw);
+                if(stop > vp.y1)
+                        vp.y1 = stop;
                 if(!_ui_rect_intersect(&clip, &vp))
                         return best;
         }
@@ -1102,6 +1158,11 @@ static struct ui_window *_scroll_window_at(struct ui_widget *w, struct ui_rect c
         if(w->type == UI_WIDGET_WINDOW && to_ui_window(w)->scroll) {
                 struct ui_rect vp;
                 _ui_window_viewport(to_ui_window(w), &vp);
+                // to the scroll stop, like paint and hit: a drag starting on a row in the
+                // corner band belongs to the window showing it
+                int16_t stop = _ui_window_scroll_stop_y1(to_ui_window(w));
+                if(stop > vp.y1)
+                        vp.y1 = stop;
                 if(!_ui_rect_intersect(&vp, &clip))
                         return best;
                 if(_ui_rect_contains(&vp, x, y))
