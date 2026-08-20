@@ -39,6 +39,14 @@ struct ui_context *light_ui_create_context(struct canvas_context *canvas)
         ui->rotate_start_ms = 0;
         ui->rotate_duration_ms = LIGHT_UI_ROTATE_MS;
         ui->safe_inset = 0;
+        ui->touch_down = false;
+        ui->touch_dragging = false;
+        ui->drag_window = NULL;
+        ui->touch_start_x = 0;
+        ui->touch_start_y = 0;
+        ui->touch_last_x = 0;
+        ui->touch_last_y = 0;
+        ui->drag_slop = LIGHT_UI_DRAG_SLOP;
         // light_alloc() does not zero, and navigate_back() reads both of these before anything
         // has necessarily navigated
         ui->page = NULL;
@@ -240,6 +248,10 @@ static void _widget_destroy_subtree(struct ui_widget *w)
         // subtree, not just its root, and this is the one walk that visits all of them
         if(w->ui->focused == w)
                 w->ui->focused = NULL;
+        //   likewise the touch tracker's drag target: a navigation mid-drag destroys the tree,
+        // and the tracker would otherwise keep scrolling released memory on the next sample
+        if(w->ui->drag_window && &w->ui->drag_window->widget == w)
+                w->ui->drag_window = NULL;
         light_free(w);
 }
 
@@ -673,7 +685,9 @@ bool light_ui_window_scroll_to(struct ui_window *win, int16_t x, int16_t y)
                 c->rect.y1 = (int16_t)(c->rect.y1 + sy);
         }
         light_ui_invalidate_widget(&win->widget);
-        light_debug("window scrolled to (%d, %d) of (%d, %d)",
+        // TRACE for the same reason as the touch-release verdict: a drag lands here once per
+        // sample, and a DEBUG console drowns under a single swipe of the thumb
+        light_trace("window scrolled to (%d, %d) of (%d, %d)",
                         win->scroll_x, win->scroll_y, (int)max_sx, (int)max_sy);
         return true;
 }
@@ -1032,6 +1046,155 @@ bool light_ui_input_press_at(struct ui_context *ui, uint16_t x, uint16_t y)
         light_ui_set_focus(ui, hit);
         _activate(hit);
         return true;
+}
+
+//   the innermost scrollable window whose viewport contains (x, y): the same clipped walk as
+// _hit_test(), keeping the LAST scrollable window seen -- deeper and later-drawn windows are
+// visited last, and a drag belongs to the surface actually under the finger, not an ancestor
+// that also happens to scroll
+static struct ui_window *_scroll_window_at(struct ui_widget *w, struct ui_rect clip,
+                                int16_t x, int16_t y, struct ui_window *best)
+{
+        if(!w->visible)
+                return best;
+        if(w->type == UI_WIDGET_WINDOW && to_ui_window(w)->scroll) {
+                struct ui_rect vp;
+                _ui_window_viewport(to_ui_window(w), &vp);
+                if(!_ui_rect_intersect(&vp, &clip))
+                        return best;
+                if(_ui_rect_contains(&vp, x, y))
+                        best = to_ui_window(w);
+                // children live inside the viewport, exactly as in _hit_test()
+                clip = vp;
+        }
+        for(struct ui_widget *c = w->first_child; c; c = c->next_sibling)
+                best = _scroll_window_at(c, clip, x, y, best);
+        return best;
+}
+
+static void _touch_reset(struct ui_context *ui)
+{
+        ui->touch_down = false;
+        ui->touch_dragging = false;
+        ui->drag_window = NULL;
+}
+
+uint8_t light_ui_input_touch(struct ui_context *ui, uint16_t x, uint16_t y, bool touching)
+{
+        //   mid-rotation samples reset the tracker rather than being remembered: the layout
+        // the touch began against is being replaced, so neither the tap nor the drag it might
+        // have become can be resolved correctly -- the same reasoning press_at() applies to
+        // its one-shot case
+        if(ui->rotating) {
+                _touch_reset(ui);
+                return UI_TOUCH_NONE;
+        }
+
+        if(!touching) {
+                if(!ui->touch_down)
+                        return UI_TOUCH_NONE;
+                //   release. a drag ends as a drag; anything still within the slop is a tap,
+                // delivered at the point the touch STARTED -- where the intent was, a finger
+                // wobbling within the slop by definition. a touch that travelled but never
+                // engaged a scrollable window is neither: the gesture pipeline owns it
+                bool was_drag = ui->touch_dragging;
+                int16_t sx = ui->touch_start_x, sy = ui->touch_start_y;
+                int32_t adx = ui->touch_last_x > sx ? ui->touch_last_x - sx : sx - ui->touch_last_x;
+                int32_t ady = ui->touch_last_y > sy ? ui->touch_last_y - sy : sy - ui->touch_last_y;
+                _touch_reset(ui);
+                //   the verdict and the numbers behind it, because "taps sometimes don't work"
+                // is otherwise undiagnosable: this is what says whether the slop is set right
+                // for the finger and panel actually in use. TRACE, not DEBUG -- it fires on
+                // every touch, and a session's worth of taps floods a DEBUG console; build at
+                // TRACE verbosity when tuning drag_slop
+                light_trace("touch release: moved (%d, %d), slop %d -> %s",
+                                (int)adx, (int)ady, ui->drag_slop,
+                                was_drag ? "drag" : (adx > ui->drag_slop || ady > ui->drag_slop)
+                                        ? "neither" : "tap");
+                if(was_drag)
+                        return UI_TOUCH_DRAG_END;
+                if(adx > ui->drag_slop || ady > ui->drag_slop)
+                        return UI_TOUCH_NONE;
+
+                struct ui_widget *hit = NULL;
+                if(ui->root) {
+                        const struct light_draw_context *render = _ui_render(ui);
+                        struct ui_rect clip = { 0, 0,
+                                (int16_t)(render->dim_x - 1), (int16_t)(render->dim_y - 1) };
+                        hit = _hit_test(ui->root, clip, sx, sy, NULL);
+                }
+                if(hit) {
+                        light_ui_set_focus(ui, hit);
+                        _activate(hit);
+                }
+                return UI_TOUCH_TAP;
+        }
+
+        // the point arrives in panel coordinates and everything below is logical, for the
+        // same reason press_at() converts: light_ui owns the render context, the caller cannot
+        light_draw_point2d logical = light_draw_untransform_point(_ui_render(ui),
+                        (light_draw_point2d) { x, y });
+        int16_t lx = (int16_t)logical.x, ly = (int16_t)logical.y;
+
+        if(!ui->touch_down) {
+                ui->touch_down = true;
+                ui->touch_dragging = false;
+                ui->drag_window = NULL;
+                ui->touch_start_x = lx;
+                ui->touch_start_y = ly;
+                ui->touch_last_x = lx;
+                ui->touch_last_y = ly;
+                return UI_TOUCH_PENDING;
+        }
+
+        if(!ui->touch_dragging) {
+                //   still deciding. beyond the slop, the touch becomes a drag IF it began over
+                // something scrollable -- looked up at the START point, since that is the
+                // surface the user put their finger on. with nothing to scroll there, the
+                // touch stays undecided: not made a drag (there is nothing to move), not left
+                // a tap (the finger clearly travelled -- checked again at release)
+                int32_t adx = lx > ui->touch_start_x ? lx - ui->touch_start_x : ui->touch_start_x - lx;
+                int32_t ady = ly > ui->touch_start_y ? ly - ui->touch_start_y : ui->touch_start_y - ly;
+                if(adx > ui->drag_slop || ady > ui->drag_slop) {
+                        struct ui_window *target = NULL;
+                        if(ui->root) {
+                                const struct light_draw_context *render = _ui_render(ui);
+                                struct ui_rect clip = { 0, 0,
+                                        (int16_t)(render->dim_x - 1), (int16_t)(render->dim_y - 1) };
+                                target = _scroll_window_at(ui->root, clip,
+                                                ui->touch_start_x, ui->touch_start_y, NULL);
+                        }
+                        if(target) {
+                                ui->touch_dragging = true;
+                                ui->drag_window = target;
+                                //   engage with the full movement since the touch began, so
+                                // the content catches up to the finger rather than staying a
+                                // slop's-worth behind it for the rest of the drag. the
+                                // CONTENT follows the FINGER: a finger moving up drags the
+                                // content up, which is the offset growing -- hence the
+                                // negation
+                                light_ui_window_scroll_by(target,
+                                                (int16_t)(ui->touch_start_x - lx),
+                                                (int16_t)(ui->touch_start_y - ly));
+                        }
+                }
+                ui->touch_last_x = lx;
+                ui->touch_last_y = ly;
+                return ui->touch_dragging ? UI_TOUCH_DRAG : UI_TOUCH_PENDING;
+        }
+
+        //   dragging: each sample moves the content by the finger's movement since the last
+        // one. the window was captured at engagement and keeps the drag even if the finger
+        // wanders off it, which is how every scrolling surface behaves; it can only be NULL
+        // here if a navigation destroyed it mid-drag, in which case there is nothing to move
+        // but the drag is still not a tap
+        if(ui->drag_window)
+                light_ui_window_scroll_by(ui->drag_window,
+                                (int16_t)(ui->touch_last_x - lx),
+                                (int16_t)(ui->touch_last_y - ly));
+        ui->touch_last_x = lx;
+        ui->touch_last_y = ly;
+        return UI_TOUCH_DRAG;
 }
 
 // --- mutators ---

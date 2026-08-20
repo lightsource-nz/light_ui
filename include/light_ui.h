@@ -24,6 +24,15 @@
 // the truncated copy is built in
 #define LIGHT_UI_TEXT_MAX               64
 
+// how far a finger may wander (in logical pixels, along either axis) before a touch stops
+// being a prospective tap and becomes a drag -- see light_ui_input_touch(). overridable per
+// context via ui_context.drag_slop.
+//   16, raised from a first guess of 8, which classified real taps as travel: a fingertip
+// rolls several pixels as it presses and the CST816T adds its own jitter (lift-off samples
+// especially), so taps were dropped or turned into 1px scrolls. still comfortably below the
+// swipe thresholds, so deliberate gestures are unaffected
+#define LIGHT_UI_DRAG_SLOP              16
+
 #define UI_WIDGET_WINDOW                0
 #define UI_WIDGET_BUTTON                1
 #define UI_WIDGET_LABEL                 2
@@ -169,6 +178,24 @@ struct ui_context {
         // pixels kept clear on every edge, for panels whose glass does not show the whole
         // pixel grid (see light_ui_set_safe_inset())
         uint8_t safe_inset;
+
+        // --- touch tracking, owned by light_ui_input_touch() ---
+        // whether a touch is in progress as of the last call, and whether it has committed
+        // to being a drag. everything in LOGICAL coordinates -- the entry point untransforms
+        // once, on the way in
+        bool touch_down;
+        bool touch_dragging;
+        // the scrollable window captured when the drag engaged: the drag stays with it even
+        // if the finger wanders off it, which is how every scrolling surface behaves. NULL
+        // when the touch began outside any scrollable viewport. cleared if the window is
+        // destroyed mid-touch, so the pointer can never dangle
+        struct ui_window *drag_window;
+        // where the touch began (what a tap activates) and the last position seen (what
+        // each drag step is measured from)
+        int16_t touch_start_x, touch_start_y;
+        int16_t touch_last_x, touch_last_y;
+        // movement allowed before a tap becomes a drag; LIGHT_UI_DRAG_SLOP by default
+        uint8_t drag_slop;
 
         // --- navigation (see struct ui_page) ---
         // the page currently built into the tree, or NULL for a context whose tree was built
@@ -355,6 +382,39 @@ extern void light_ui_input_activate(struct ui_context *ui);
 // the assumption is that the touch panel is aligned with the display and reports over the
 // same coordinate range; where it isn't, scale before calling
 extern bool light_ui_input_press_at(struct ui_context *ui, uint16_t x, uint16_t y);
+
+// what light_ui_input_touch() did with the sample it was given
+#define UI_TOUCH_NONE                   0
+#define UI_TOUCH_PENDING                1
+#define UI_TOUCH_DRAG                   2
+#define UI_TOUCH_TAP                    3
+#define UI_TOUCH_DRAG_END               4
+
+//   the stateful alternative to light_ui_input_press_at(), and the entry point that makes
+// touch control scrolling: feed it the panel's CURRENT state every tick -- position and
+// whether a finger is down, exactly what light_touch maintains -- and it runs the whole
+// tap-versus-drag interaction:
+//
+//   - a touch that ends within drag_slop of where it began is a TAP, delivered on RELEASE at
+//     the point the touch STARTED. release rather than the old down-edge, because with
+//     scrollable content a down-edge activation fires on every drag's first contact; the
+//     start point rather than the release point, because that is where the intent was, and a
+//     finger wobbles within the slop by definition
+//   - a touch that moves beyond drag_slop while over a scrollable window's viewport becomes a
+//     DRAG: the window under the touch's start point scrolls to follow the finger, step by
+//     step, until release. the caller should then tell its touch device the movement was
+//     consumed (light_touch_suppress_gesture()), or the release will also classify as a swipe
+//   - a touch that moves beyond the slop with NO scrollable window under it commits to
+//     neither: not a tap (the finger clearly travelled), and nothing to scroll -- the release
+//     is left for the gesture pipeline, so a swipe on a non-scrolling page still navigates
+//
+//   returns what the call did: UI_TOUCH_TAP on the release tick of a tap (whether or not it
+// hit anything actionable), UI_TOUCH_DRAG while drag-scrolling (from the tick it engages),
+// UI_TOUCH_DRAG_END on the release tick of a drag, UI_TOUCH_PENDING while a touch is down but
+// undecided, UI_TOUCH_NONE otherwise. coordinates are PANEL coordinates, untransformed here
+// for the same reason light_ui_input_press_at() does it. samples arriving mid-rotation reset
+// the tracker and report UI_TOUCH_NONE, on the same grounds press_at ignores them
+extern uint8_t light_ui_input_touch(struct ui_context *ui, uint16_t x, uint16_t y, bool touching);
 
 // a swipe's direction in the LOGICAL frame, i.e. the one the user is looking at
 #define UI_SWIPE_NONE                   0
