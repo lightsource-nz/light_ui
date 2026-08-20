@@ -1,5 +1,8 @@
 #include <light_ui.h>
 #include <light_platform.h>
+// for light_cli_queue_line(): widget-attached commands are queued for cli_task(), never run
+// inline -- see _activate()
+#include <light_cli.h>
 
 #include "light_ui_internal.h"
 
@@ -47,6 +50,8 @@ struct ui_context *light_ui_create_context(struct canvas_context *canvas)
         ui->touch_last_x = 0;
         ui->touch_last_y = 0;
         ui->drag_slop = LIGHT_UI_DRAG_SLOP;
+        // no command tree until the application names one (light_ui_set_command_root())
+        ui->command_root = NULL;
         // light_alloc() does not zero, and navigate_back() reads both of these before anything
         // has necessarily navigated
         ui->page = NULL;
@@ -133,6 +138,9 @@ struct ui_button *light_ui_button_create(struct ui_context *ui, struct ui_widget
         btn->label = label;
         btn->on_press = on_press;
         btn->user_data = user_data;
+        // no command until one is attached -- light_alloc() does not zero, and _activate()
+        // reads this on every press
+        btn->command = NULL;
         btn->corner_radius = 0;
         btn->corners = LIGHT_DRAW_CORNER_NONE;
         _widget_init(&btn->widget, ui, parent, UI_WIDGET_BUTTON, rect, true);
@@ -175,6 +183,9 @@ static struct ui_widget *_build_desc(struct ui_context *ui, struct ui_widget *pa
         case UI_WIDGET_BUTTON:; {
                 struct ui_button *btn = light_ui_button_create(ui, parent, desc->rect, desc->text,
                                                                 desc->on_press, desc->user_data);
+                // a descriptor's strings are flash literals, which satisfies the field's
+                // outlives-the-button rule by construction
+                btn->command = desc->command;
                 w = &btn->widget;
                 break;
         }
@@ -931,8 +942,39 @@ static void _activate(struct ui_widget *w)
                 return;
         struct ui_button *btn = to_ui_button(w);
         light_debug("button '%s' activated", btn->label ? (const char *)btn->label : "(unlabelled)");
+
+        //   EVERYTHING needed after the handler is read BEFORE it runs, because the handler
+        // may navigate -- and navigation destroys the tree, `btn` included (which is exactly
+        // why handlers conventionally navigate as their last statement). The strings survive:
+        // both point at caller-owned storage, flash literals in the descriptor-built case.
+        // The CONTEXT survives too -- navigation replaces its tree, never the context itself.
+        //   found the hard way: reading btn->command after a navigating handler dereferenced
+        // freed memory, and the garbage pointer wedged core 0 inside snprintf -- presenting as
+        // a dead UI with the click tone stuck on, the audio task having died with the core
+        struct ui_context *ui = w->ui;
+        const uint8_t *command = btn->command;
+        const char *label = btn->label ? (const char *)btn->label : "(unlabelled)";
+
+        //   the handler BEFORE the command: a button carrying both usually uses the handler
+        // for the immediate, local effect (a click sound, a label change) and the command for
+        // the operation -- and since the command is only queued here, the handler is the last
+        // thing that can still see the pre-command state either way
         if(btn->on_press)
                 btn->on_press(btn, btn->user_data);
+        if(command) {
+                //   queued rather than run: cli_task() dispatches it on a later tick, so the
+                // command's handler runs outside the render/input path with the same parsing,
+                // pacing and logging a console line gets. this also means the button does NOT
+                // learn whether the command succeeded -- the command tree's own logging is
+                // where that story is told, same as for every other line
+                if(!ui->command_root)
+                        light_warn("button '%s' carries command '%s' but the context has no "
+                                        "command root -- see light_ui_set_command_root()",
+                                        label, (const char *)command);
+                else if(!light_cli_queue_line(ui->command_root, command))
+                        light_warn("button '%s': command queue full, '%s' dropped",
+                                        label, (const char *)command);
+        }
 }
 
 void light_ui_input_activate(struct ui_context *ui)
@@ -1239,6 +1281,15 @@ void light_ui_button_set_label(struct ui_button *btn, const uint8_t *label)
 {
         btn->label = label;
         light_ui_invalidate_widget(&btn->widget);
+}
+void light_ui_set_command_root(struct ui_context *ui, struct light_command *root)
+{
+        ui->command_root = root;
+}
+void light_ui_button_set_command(struct ui_button *btn, const uint8_t *command)
+{
+        // no invalidation: a command changes what a press does, not what the button shows
+        btn->command = command;
 }
 void light_ui_label_set_text(struct ui_label *lbl, const uint8_t *text)
 {

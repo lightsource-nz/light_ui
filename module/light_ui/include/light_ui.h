@@ -65,6 +65,10 @@ struct ui_rect {
 struct ui_widget;
 struct ui_context;
 struct ui_page;
+// from light_cli, for widgets that queue command lines on activation -- see
+// light_ui_set_command_root(). forward-declared so this header does not pull light_cli.h
+// into every consumer
+struct light_command;
 
 // widgets are plain allocations owned by their ui_context, NOT light_objects. the object
 // tree exists to name and refcount *devices* -- discoverable hardware whose add triggers
@@ -149,6 +153,15 @@ struct ui_button {
         const uint8_t *label;
         void (*on_press)(struct ui_button *, void *);
         void *user_data;
+        //   a command line to run when this button is activated, or NULL. Queued through
+        // light_cli_queue_line() against the context's command_root, so it is dispatched by
+        // cli_task() on a later tick exactly as a console line would be -- same parsing, same
+        // pacing, same logging -- rather than run inside the activation. A button carrying
+        // both fires on_press first, then queues the command.
+        //   typed without the root's name, like a console line: "backlight 600", "shutdown".
+        // NOT copied -- point it at storage that outlives the button, which for the
+        // descriptor-built case is a string literal in flash
+        const uint8_t *command;
         // 0 for a square button. set by light_ui_window_layout_stack() on a row that sits
         // flush against the inside of a rounded window, so the row follows the container's
         // curve instead of stopping short of it -- `corners` names only the ones that touch
@@ -196,6 +209,11 @@ struct ui_context {
         int16_t touch_last_x, touch_last_y;
         // movement allowed before a tap becomes a drag; LIGHT_UI_DRAG_SLOP by default
         uint8_t drag_slop;
+
+        //   the command tree that widget-attached command lines dispatch against, or NULL --
+        // see light_ui_set_command_root(). The context cannot guess it: every application
+        // owns its own root command, the same way it owns its input wiring
+        struct light_command *command_root;
 
         // --- navigation (see struct ui_page) ---
         // the page currently built into the tree, or NULL for a context whose tree was built
@@ -478,6 +496,9 @@ struct ui_desc {
         const uint8_t *text;
         void (*on_press)(struct ui_button *, void *);
         void *user_data;
+        // command line a button queues on activation -- see struct ui_button. lives happily
+        // in a descriptor because a descriptor's strings are flash literals anyway
+        const uint8_t *command;
         uint8_t corner_radius;
         uint8_t layout;
         uint8_t layout_gap;
@@ -515,6 +536,7 @@ struct ui_desc {
 #define Light_UI_Rect(_x0, _y0, _x1, _y1) \
         .rect = { (_x0), (_y0), (_x1), (_y1) }
 #define Light_UI_Bind(ptr)              .bind = (void **)&(ptr)
+#define Light_UI_Command(line)          .command = (const uint8_t *)(line)
 
 #define Light_UI_Window_Define(sym, _title, ...) \
         static const struct ui_desc sym = { \
@@ -628,6 +650,22 @@ extern void light_ui_widget_set_visible(struct ui_widget *w, bool visible);
 extern void light_ui_widget_set_enabled(struct ui_widget *w, bool enabled);
 extern void light_ui_button_set_label(struct ui_button *btn, const uint8_t *label);
 extern void light_ui_label_set_text(struct ui_label *lbl, const uint8_t *text);
+
+// --- widget-attached commands --------------------------------------------------------------
+//
+//   names the command tree that widget command lines dispatch against -- an application's own
+// root command, the same one its console uses (the demo passes cmd_light_ui_demo). Without
+// this, an activated widget's command is dropped with a warning: light_ui cannot guess whose
+// tree it is serving, for the same reason it cannot guess which buttons the board has.
+//
+//   commands are QUEUED (light_cli_queue_line()), not run inline: cli_task() dispatches one
+// per tick, so a handler runs outside the render/input path with the same pacing and parsing
+// a console line gets -- and a UI button, a console line and a baked boot command become three
+// spellings of the same operation
+extern void light_ui_set_command_root(struct ui_context *ui, struct light_command *root);
+// attaches (or clears, with NULL) a button's command line -- see struct ui_button for the
+// string's lifetime rules
+extern void light_ui_button_set_command(struct ui_button *btn, const uint8_t *command);
 
 // marks a widget's area as needing to be pushed to the panel. widget mutators above call
 // this for you; it is public for anything that changes what a custom widget draws

@@ -347,11 +347,17 @@ Light_UI_Window_Define(_demo_window, LIGHT_UI_DEMO_TITLE,
         Light_UI_Children(&_btn_alpha, &_btn_beta, &_btn_gamma, &_btn_more, &_btn_list));
 
 Light_UI_Label_Define(_lbl_detail, "swipe right to go back");
+//   the widget-attached-command example: no on_press at all -- the whole press IS the command
+// line, queued for cli_task() and dispatched exactly as if it had been typed at the console.
+// The same operation therefore has three spellings here: these buttons, `backlight N` at the
+// prompt, and the baked boot command
+Light_UI_Button_Define(_btn_dim,    "Dim",    NULL, NULL, Light_UI_Command("backlight 60"));
+Light_UI_Button_Define(_btn_bright, "Bright", NULL, NULL, Light_UI_Command("backlight 600"));
 Light_UI_Button_Define(_btn_back, "< Back", _on_detail_back, NULL);
 Light_UI_Window_Define(_detail_window, "More",
         Light_UI_Rounded(LIGHT_UI_DEMO_CORNER_RADIUS),
         Light_UI_Stack(LIGHT_UI_DEMO_ROW_GAP),
-        Light_UI_Children(&_lbl_detail, &_btn_back));
+        Light_UI_Children(&_lbl_detail, &_btn_dim, &_btn_bright, &_btn_back));
 
 Light_UI_Window_Define(_list_window, "List",
         Light_UI_Rounded(LIGHT_UI_DEMO_CORNER_RADIUS),
@@ -398,6 +404,10 @@ void light_ui_demo_event(const struct light_module *module, uint8_t event, void 
                 light_canvas_set_frame_rate(canvas, LIGHT_UI_DEMO_FRAME_RATE);
 
                 _ui = light_ui_create_context(canvas);
+                //   widget-attached commands dispatch against the same root the console and
+                // the baked boot command use, which is the point: one command tree, three
+                // ways to reach it
+                light_ui_set_command_root(_ui, &cmd_light_ui_demo);
                 // the whole widget tree, from the descriptor above. building a root sizes it
                 // to the canvas, so there is no rect to compute here
 #if LIGHT_UI_DEMO_PAGES

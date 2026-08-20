@@ -19,11 +19,17 @@ target_sources(
 #
 # deliberately no light_touch/light_button dependency: light_ui's input entry points are
 # hardware-free, so it builds on a host with no device modules present at all (see the
-# input section of light_ui.h). applications wire their own devices onto them
+# input section of light_ui.h). applications wire their own devices onto them.
+#
+# light_cli IS a dependency now, and deliberately so: widgets can carry a command line that
+# activation queues for cli_task (see light_ui_set_command_root()), which makes a UI button,
+# a console line and a baked boot command three spellings of the same operation. cli is
+# hardware-free like light_ui itself, so the host-buildability argument above is untouched
 target_link_libraries(
         light_ui INTERFACE
         light_canvas
         light_display
         light_draw
+        light_cli
         light_core
 )
