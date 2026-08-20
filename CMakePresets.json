@@ -1,0 +1,62 @@
+{
+    "version": 6,
+    "include": ["../light_framework_mk3/cmake/light_presets/light_pico_presets.json"],
+    "configurePresets": [
+        {
+            "name": "conf-light_ui-base",
+            "hidden": true,
+            "inherits": ["conf-light-pico-base"],
+            "binaryDir": "${sourceDir}/build",
+            "generator": "Ninja"
+        },
+        {
+            "name": "conf-light_ui-host-debug",
+            "description": "The host build, and the configuration that registers this group's tests (light_canvas's suite, and whatever the other modules grow). Plain host rather than pico_hostmode: nothing in the group needs the Pico SDK's host build.",
+            "inherits": [
+                "conf-light-host-debug"
+            ],
+            "binaryDir": "${sourceDir}/build-host",
+            "generator": "Ninja"
+        },
+        {
+            "name": "conf-light_ui-pico2-debug",
+            "description": "The po13 demo rig -- a Pico 2 in an SWD dock wearing the Pico-OLED-1.3 expansion board. Split by chip into its own tree, the same arrangement crossfire and screen-test use.",
+            "inherits": [
+                "conf-light_ui-base",
+                "conf-light-pico2",
+                "conf-light-debug"
+            ],
+            "binaryDir": "${sourceDir}/build-pico2"
+        },
+        {
+            "name": "conf-light_ui-waveshare-touch169-debug",
+            "description": "The touch demo on the Waveshare RP2350-Touch-LCD-1.69. The boot command and the CDC connect-wait knob moved here from screen-test along with the demo that consumes them.",
+            "inherits": [
+                "conf-light_ui-base",
+                "conf-light-waveshare-touch169",
+                "conf-light-debug"
+            ],
+            "binaryDir": "${sourceDir}/build-waveshare-touch169",
+            "cacheVariables": {
+                "PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS": "-1",
+                "LIGHT_BOOT_COMMAND": "light_ui_demo backlight 600"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "build-light_ui-host",
+            "configurePreset": "conf-light_ui-host-debug"
+        },
+        {
+            "name": "build-light_ui_demo_po13-debug",
+            "configurePreset": "conf-light_ui-pico2-debug",
+            "targets": ["light_ui_demo_po13"]
+        },
+        {
+            "name": "build-light_ui_demo_touch169-debug",
+            "configurePreset": "conf-light_ui-waveshare-touch169-debug",
+            "targets": ["light_ui_demo_touch169"]
+        }
+    ]
+}
