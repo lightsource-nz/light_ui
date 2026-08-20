@@ -19,3 +19,8 @@ target_link_libraries(
         light_draw
         light_core
 )
+
+# tests are host-only, on the same terms as light_ui's and light_audio's
+if(BUILD_TESTING AND LIGHT_PLATFORM STREQUAL HOST)
+        add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/test light_canvas_test)
+endif()

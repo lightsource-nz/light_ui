@@ -50,13 +50,13 @@
 
         #   'auto' discovery, HOST_OS explicitly -- the same shape as screen-test's, and for
         # the same reasons: test binaries sit at different depths, and the coverage build is a
-        # plain Linux build. What this measures is what the group's host suite actually
-        # reaches: light_audio thoroughly, plus the light_draw and framework suites that
-        # register through the standalone build. NOTE what is absent rather than at 0%: the
-        # widget toolkit (module/light_ui) and light_canvas compile into no test binary, so
-        # they do not appear in the report at all -- their behaviour is hardware-verified but
-        # unmeasured, which is the gap a future suite should close. The board drivers and hw
-        # wiring are target-only and will never appear
+        # plain Linux build. What this measures is what the group's host suite reaches: the
+        # widget toolkit's layout/scroll/focus/touch logic (test_light_ui), the canvas's
+        # region and pacing rules (test_light_canvas), light_audio, and the light_draw and
+        # framework suites that register through the standalone build. ui_draw.c is the one
+        # 0% file with a suite beside it: nothing renders frames yet -- the paint walk is the
+        # next surface worth a test. The board drivers and hw wiring are target-only and will
+        # never appear
         Coverage = @{
                 Objects     = 'auto'
                 IgnoreRegex = '(/lib/|/usr/|sanitizers/|_deps/|/freetype/|/jansson/)'
