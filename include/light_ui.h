@@ -34,6 +34,12 @@
 #define UI_LAYOUT_NONE                  0
 #define UI_LAYOUT_STACK                 1
 
+// whether a window's content may exceed its frame and be moved through it, per axis. OR-able,
+// so a window can scroll one way, the other, or both -- see light_ui_window_set_scroll()
+#define UI_SCROLL_NONE                  0
+#define UI_SCROLL_VERTICAL              (1 << 0)
+#define UI_SCROLL_HORIZONTAL            (1 << 1)
+
 // an inclusive rectangle in LOGICAL light_draw coordinates -- the same space the caller draws in
 // (post-rotation, see light_draw_context_set_rotation()), never the physical buffer's.
 //
@@ -75,6 +81,17 @@ struct ui_widget {
         // the drawing with it, filling in the padding that keeps the row inside the frame it
         // is supposed to trace. What is wrong here is the target, not the picture
         uint8_t hit_slop_y1;
+        //   bounds on what auto-layout may make of this widget, each 0 for unconstrained --
+        // which is every widget that does not ask, so existing layouts divide space exactly as
+        // they always have. A minimum is what makes a stack OVERFLOW rather than shrink its
+        // rows without limit: rows pinned at min_h can need more height than the window has,
+        // and the excess is what a scrolling window (see struct ui_window) moves through its
+        // frame. min wins over max where they conflict, on the grounds that a widget too small
+        // to use is the worse failure.
+        //   these constrain LAYOUT, not the application: a hand-placed rect under a
+        // UI_LAYOUT_NONE window is taken as given, constraints and all
+        int16_t min_w, min_h;
+        int16_t max_w, max_h;
         struct ui_context *ui;
         struct ui_widget *parent;
         struct ui_widget *next_sibling;
@@ -97,6 +114,25 @@ struct ui_window {
         // window whose children were placed by hand
         uint8_t layout;
         uint8_t layout_gap;
+
+        // --- scrolling (see light_ui_window_set_scroll()) ---
+        // UI_SCROLL_* flags. while any are set, painting and hit-testing clip this window's
+        // children to its viewport (the content area inside border, padding, header and
+        // corner clearance), which is what lets content live partly outside the frame
+        uint8_t scroll;
+        //   how far the content is currently moved, per axis, >= 0: scroll_y = 20 means the
+        // content has moved UP by 20 pixels and rows 0..19 of it are above the viewport.
+        // Widget rects stay ABSOLUTE canvas coordinates -- scrolling shifts the rects of
+        // everything under the window, so a hit test, a clip and an invalidation remain the
+        // same arithmetic they have always been. these fields exist so the shift can be
+        // clamped and reasoned about, not as a second coordinate space
+        int16_t scroll_x, scroll_y;
+        //   extent of the laid-out content, measured from the viewport origin at scroll 0.
+        // Maintained by light_ui_window_layout_stack(); measured from the children's rects on
+        // demand for a UI_LAYOUT_NONE window. What there is to scroll is content minus
+        // viewport, and the clamp in light_ui_window_scroll_by() is why content can never be
+        // pushed clear of the frame
+        int16_t content_w, content_h;
 };
 
 struct ui_button {
@@ -204,6 +240,42 @@ extern struct ui_label *light_ui_label_create(struct ui_context *ui, struct ui_w
 // natural companion to focus-cycling navigation: a vertical stack has an obvious visual
 // order, and "next" means the row below
 extern void light_ui_window_layout_stack(struct ui_window *win, uint8_t gap);
+
+// --- scrolling ------------------------------------------------------------------------------
+//
+// marks a window as scrollable along the given axes (UI_SCROLL_* flags, OR-able). while set:
+//   - the window's children are clipped to its viewport when painted and hit-tested, so
+//     content can sit partly (or wholly) outside the frame without drawing over it
+//   - light_ui_window_layout_stack() lets rows overflow the frame instead of shrinking them
+//     below their minimums (see min_h in struct ui_widget)
+//   - the flush-corner treatment the stack gives its last row is withdrawn: corners minted
+//     for one position are wrong the moment the row moves
+//
+// scrolling itself is by the calls below, and by focus: light_ui_set_focus() scrolls the
+// focused widget into view, so a button rig cycling focus through an overflowing list scrolls
+// it as a side effect of navigation it already does. touch-driven scrolling (dragging the
+// content) is deliberately not built yet -- these primitives are what it will sit on
+extern void light_ui_window_set_scroll(struct ui_window *win, uint8_t flags);
+
+//   moves the content by (dx, dy) -- positive dy scrolls DOWN the content, i.e. the content
+// moves up through the frame. Clamped so the content never detaches from the viewport: at the
+// top nothing happens scrolling up, at the bottom nothing happens scrolling down, and an axis
+// without its UI_SCROLL_* flag never moves. Returns whether anything actually moved, which is
+// what lets a future drag gesture tell a scroll from a swipe on a window with nothing left to
+// scroll
+extern bool light_ui_window_scroll_by(struct ui_window *win, int16_t dx, int16_t dy);
+// the same, to an absolute offset (clamped likewise)
+extern bool light_ui_window_scroll_to(struct ui_window *win, int16_t x, int16_t y);
+
+//   scrolls every scrollable ancestor of `w` by as little as needed to bring it into view.
+// Called by light_ui_set_focus(), so focus-driven navigation scrolls for free; public for
+// anything else that makes a widget newsworthy (a highlighted alarm, a completed step)
+extern void light_ui_scroll_into_view(struct ui_widget *w);
+
+// layout constraints -- see min_w/min_h/max_w/max_h in struct ui_widget. 0 = unconstrained.
+// takes effect on the next layout pass; call before the layout runs (or relayout after)
+extern void light_ui_widget_set_min_size(struct ui_widget *w, int16_t min_w, int16_t min_h);
+extern void light_ui_widget_set_max_size(struct ui_widget *w, int16_t max_w, int16_t max_h);
 
 // rounds the window's frame, and keeps its content clear of the curve. meant for a root
 // window drawn at the edge of glass that is itself rounded: the frame then follows the panel
@@ -349,6 +421,11 @@ struct ui_desc {
         uint8_t corner_radius;
         uint8_t layout;
         uint8_t layout_gap;
+        // UI_SCROLL_* flags for a window descriptor -- see light_ui_window_set_scroll()
+        uint8_t scroll;
+        // layout constraints, 0 = unconstrained -- see the fields on struct ui_widget
+        int16_t min_w, min_h;
+        int16_t max_w, max_h;
         // left zeroed for anything a layout will place, which is the usual case. only
         // meaningful for a hand-placed widget under a UI_LAYOUT_NONE parent
         struct ui_rect rect;
@@ -372,6 +449,9 @@ struct ui_desc {
 // and omitted entirely
 #define Light_UI_Stack(gap)             .layout = UI_LAYOUT_STACK, .layout_gap = (gap)
 #define Light_UI_Rounded(radius)        .corner_radius = (radius)
+#define Light_UI_Scroll(flags)          .scroll = (flags)
+#define Light_UI_MinSize(w, h)          .min_w = (w), .min_h = (h)
+#define Light_UI_MaxSize(w, h)          .max_w = (w), .max_h = (h)
 #define Light_UI_Rect(_x0, _y0, _x1, _y1) \
         .rect = { (_x0), (_y0), (_x1), (_y1) }
 #define Light_UI_Bind(ptr)              .bind = (void **)&(ptr)

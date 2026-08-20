@@ -69,6 +69,11 @@ static void _widget_init(struct ui_widget *w, struct ui_context *ui, struct ui_w
         w->enabled = true;
         // no slop unless a layout grants it; a widget positioned by hand owns exactly its rect
         w->hit_slop_y1 = 0;
+        // unconstrained until asked -- see light_ui_widget_set_min_size()
+        w->min_w = 0;
+        w->min_h = 0;
+        w->max_w = 0;
+        w->max_h = 0;
         w->ui = ui;
         w->parent = parent;
         w->next_sibling = NULL;
@@ -101,6 +106,12 @@ struct ui_window *light_ui_window_create(struct ui_context *ui, struct ui_widget
         // alone rather than rearranging rects somebody chose deliberately
         win->layout = UI_LAYOUT_NONE;
         win->layout_gap = 0;
+        // not scrollable until asked -- see light_ui_window_set_scroll()
+        win->scroll = UI_SCROLL_NONE;
+        win->scroll_x = 0;
+        win->scroll_y = 0;
+        win->content_w = 0;
+        win->content_h = 0;
         _widget_init(&win->widget, ui, parent, UI_WIDGET_WINDOW, rect, false);
         return win;
 }
@@ -147,6 +158,9 @@ static struct ui_widget *_build_desc(struct ui_context *ui, struct ui_widget *pa
                 // clear the curve
                 if(desc->corner_radius)
                         light_ui_window_set_corner_radius(win, desc->corner_radius);
+                // likewise before the layout runs at the bottom of this function: whether a
+                // window scrolls changes how the stack treats rows that do not fit
+                win->scroll = desc->scroll;
                 w = &win->widget;
                 break;
         }
@@ -165,6 +179,13 @@ static struct ui_widget *_build_desc(struct ui_context *ui, struct ui_widget *pa
                 light_error("ui descriptor names unknown widget type 0x%x", desc->type);
                 return NULL;
         }
+
+        // constraints land before the parent's layout divides its space (the layout call in
+        // the PARENT's _build_desc frame runs after all its children return from here)
+        w->min_w = desc->min_w;
+        w->min_h = desc->min_h;
+        w->max_w = desc->max_w;
+        w->max_h = desc->max_h;
 
         // every widget struct embeds its ui_widget FIRST, so this is the widget's own address
         // and the caller's typed pointer needs no adjustment -- guaranteed by C, not by luck
@@ -353,44 +374,30 @@ static struct ui_widget *_tree_next(struct ui_widget *w, struct ui_widget *root)
         return NULL;
 }
 
-void light_ui_window_layout_stack(struct ui_window *win, uint8_t gap)
+//   the shared viewport computation -- see the declaration in light_ui_internal.h for why
+// this is one function rather than arithmetic repeated at each consumer.
+//
+//   the frame itself occupies the outermost pixel ring, so content starts inside it. rows
+// span the full width, so a rounded corner has to be cleared vertically for them -- but only
+// as far as the arc actually reaches in at inset_x, not by the whole radius. at radius 40
+// with a 3px inset that is 25 rows rather than 40, and the 30px it gives back over the two
+// ends is a ninth of a 280px panel.
+//
+//   a titled window loses the title row plus its separator line to the header. the header
+// sits at the TOP of the frame, above where the corner drop puts content, so it is a lower
+// bound on content.y0 rather than something added to it -- adding would push content down
+// twice over for the same corner
+void _ui_window_viewport(const struct ui_window *win, struct ui_rect *out)
 {
-        // recorded before it is applied, so light_ui_relayout() can re-run exactly this
-        // arrangement later without the application being asked to do it again
-        win->layout = UI_LAYOUT_STACK;
-        win->layout_gap = gap;
-
         struct ui_rect content = win->widget.rect;
-        // the frame itself occupies the outermost pixel ring, so content starts inside it.
-        // rows span the full width, so a rounded corner has to be cleared vertically for them
-        // -- but only as far as the arc actually reaches in at inset_x, not by the whole
-        // radius. at radius 40 with a 3px inset that is 25 rows rather than 40, and the 30px
-        // it gives back over the two ends is a ninth of a 280px panel
         int16_t inset_x = _ui_window_inset_x(win);
         int16_t drop = _ui_corner_drop(win, inset_x);
         int16_t inset_y = drop > inset_x ? drop : inset_x;
         content.x0 += inset_x;
-        content.y0 += inset_y;
         content.x1 -= inset_x;
+        content.y0 += inset_y;
+        content.y1 -= inset_y;
 
-        // the BOTTOM is different: rather than stopping short of the curve, the last row runs
-        // all the way down and takes the container's curve as its own bottom corners. the
-        // arithmetic works because insetting a rounded rect by inset_x leaves a rounded rect
-        // of radius (R - inset_x) about the SAME arc centres, so a row whose bottom edge is at
-        // y1 - inset_x and whose bottom corners have that radius traces the container exactly.
-        //
-        // it only works if the row is at least that tall, though. a shorter row's straight
-        // left edge would begin inside the arc and poke out of the container, so the flush
-        // treatment is offered and then withdrawn below if the rows come out too short
-        int16_t flush_r = (int16_t)win->corner_radius - inset_x;
-        if(flush_r < 0)
-                flush_r = 0;
-        content.y1 -= flush_r > 0 ? inset_x : inset_y;
-
-        // a titled window loses the title row plus its separator line to the header. the
-        // header sits at the TOP of the frame, above where the corner drop puts content, so
-        // this is a lower bound on content.y0 rather than something added to it -- adding
-        // would push content down twice over for the same corner
         const light_draw_font_t *font = _ui_render(win->widget.ui)->font;
         if(win->title && font) {
                 int16_t header_bottom = (int16_t)(win->widget.rect.y0 + (win->border ? 1 : 0)
@@ -398,6 +405,62 @@ void light_ui_window_layout_stack(struct ui_window *win, uint8_t gap)
                 if(header_bottom > content.y0)
                         content.y0 = header_bottom;
         }
+        *out = content;
+}
+
+// a stacked row's height and width once its widget's constraints have had their say. min wins
+// over max where they conflict -- a widget too small to use is the worse failure
+static int32_t _stack_row_height(const struct ui_widget *c, int32_t row_h)
+{
+        if(c->max_h && row_h > c->max_h)
+                row_h = c->max_h;
+        if(c->min_h && row_h < c->min_h)
+                row_h = c->min_h;
+        return row_h;
+}
+static int32_t _stack_row_width(const struct ui_widget *c, int32_t row_w)
+{
+        if(c->max_w && row_w > c->max_w)
+                row_w = c->max_w;
+        if(c->min_w && row_w < c->min_w)
+                row_w = c->min_w;
+        return row_w;
+}
+
+void light_ui_window_layout_stack(struct ui_window *win, uint8_t gap)
+{
+        // recorded before it is applied, so light_ui_relayout() can re-run exactly this
+        // arrangement later without the application being asked to do it again
+        win->layout = UI_LAYOUT_STACK;
+        win->layout_gap = gap;
+
+        struct ui_rect content;
+        _ui_window_viewport(win, &content);
+        int16_t inset_x = _ui_window_inset_x(win);
+        // the viewport's own bottom, kept for the withdrawal below
+        int16_t plain_y1 = content.y1;
+
+        bool scroll_v = (win->scroll & UI_SCROLL_VERTICAL) != 0;
+
+        // the BOTTOM is different for a non-scrolling window: rather than stopping short of
+        // the curve, the last row runs all the way down and takes the container's curve as its
+        // own bottom corners. the arithmetic works because insetting a rounded rect by inset_x
+        // leaves a rounded rect of radius (R - inset_x) about the SAME arc centres, so a row
+        // whose bottom edge is at y1 - inset_x and whose bottom corners have that radius
+        // traces the container exactly.
+        //
+        // it only works if the row is at least that tall, though. a shorter row's straight
+        // left edge would begin inside the arc and poke out of the container, so the flush
+        // treatment is offered and then withdrawn below if the rows come out too short.
+        //
+        // WITHHELD ENTIRELY from a scrolling window: its rows move, and corners minted for the
+        // position a row happened to occupy are wrong the moment it does. content stays inside
+        // the viewport instead, and the frame's curve is never traced
+        int16_t flush_r = scroll_v ? 0 : (int16_t)win->corner_radius - inset_x;
+        if(flush_r < 0)
+                flush_r = 0;
+        if(flush_r > 0)
+                content.y1 = (int16_t)(win->widget.rect.y1 - inset_x);
 
         uint16_t count = 0;
         for(struct ui_widget *c = win->widget.first_child; c; c = c->next_sibling) {
@@ -411,15 +474,18 @@ void light_ui_window_layout_stack(struct ui_window *win, uint8_t gap)
         // gaps sit BETWEEN rows, so there are count-1 of them
         int32_t row_h = (total_h - (int32_t)gap * (count - 1)) / count;
         if(row_h < 1) {
-                light_warn("window content (%d px) too short for %d stacked rows",
-                                (int)total_h, count);
+                // not worth a warning on a scrolling window: overflowing is what it is FOR,
+                // and rows pinned at their minimums below are the expected shape here
+                if(!scroll_v)
+                        light_warn("window content (%d px) too short for %d stacked rows",
+                                        (int)total_h, count);
                 row_h = 1;
         }
         // the withdrawal promised above: rows too short to contain the container's curve pull
         // the bottom back to the ordinary drop and lay out again, rather than drawing a row
         // that hangs outside the frame
         if(flush_r > 0 && row_h < flush_r) {
-                content.y1 -= (int16_t)(inset_y - inset_x);
+                content.y1 = plain_y1;
                 flush_r = 0;
                 total_h = (int32_t)content.y1 - content.y0 + 1;
                 row_h = (total_h - (int32_t)gap * (count - 1)) / count;
@@ -427,19 +493,56 @@ void light_ui_window_layout_stack(struct ui_window *win, uint8_t gap)
                         row_h = 1;
         }
 
-        int16_t y = content.y0;
+        //   the content's extent, measured before anything is placed: the scroll offset has to
+        // be clamped against it FIRST, so rows are laid out against an offset that is already
+        // legal -- clamping afterwards would need a second pass to move them.
+        //   for a window that cannot scroll an axis the offset is pinned to 0, which is also
+        // what makes turning scrolling off put everything back
+        int32_t content_h = 0, content_w = 0;
+        int32_t viewport_w = (int32_t)content.x1 - content.x0 + 1;
+        for(struct ui_widget *c = win->widget.first_child; c; c = c->next_sibling) {
+                if(!c->visible)
+                        continue;
+                content_h += _stack_row_height(c, row_h);
+                int32_t w = _stack_row_width(c, viewport_w);
+                if(w > content_w)
+                        content_w = w;
+        }
+        content_h += (int32_t)gap * (count - 1);
+        win->content_h = content_h > INT16_MAX ? INT16_MAX : (int16_t)content_h;
+        win->content_w = content_w > INT16_MAX ? INT16_MAX : (int16_t)content_w;
+
+        int32_t max_sy = content_h - total_h;
+        int32_t max_sx = content_w - viewport_w;
+        if(!scroll_v || max_sy < 0)
+                max_sy = 0;
+        if(!(win->scroll & UI_SCROLL_HORIZONTAL) || max_sx < 0)
+                max_sx = 0;
+        if(win->scroll_y > max_sy) win->scroll_y = (int16_t)max_sy;
+        if(win->scroll_y < 0)      win->scroll_y = 0;
+        if(win->scroll_x > max_sx) win->scroll_x = (int16_t)max_sx;
+        if(win->scroll_x < 0)      win->scroll_x = 0;
+
+        int16_t y = (int16_t)(content.y0 - win->scroll_y);
+        int16_t x0 = (int16_t)(content.x0 - win->scroll_x);
         uint16_t index = 0;
         for(struct ui_widget *c = win->widget.first_child; c; c = c->next_sibling) {
                 if(!c->visible)
                         continue;
-                c->rect.x0 = content.x0;
-                c->rect.x1 = content.x1;
+                int32_t h = _stack_row_height(c, row_h);
+                int32_t w = _stack_row_width(c, viewport_w);
+                c->rect.x0 = x0;
+                c->rect.x1 = (int16_t)(x0 + w - 1);
                 c->rect.y0 = y;
                 bool last = (++index == count);
-                // the last row absorbs the remainder of the integer division as well as
-                // reaching the bottom edge -- otherwise up to count-1 pixels of the container
-                // would show through below a row that is supposed to be flush with it
-                c->rect.y1 = last ? content.y1 : (int16_t)(y + row_h - 1);
+                // the last row of a NON-SCROLLING stack absorbs the remainder of the integer
+                // division as well as reaching the bottom edge -- otherwise up to count-1
+                // pixels of the container would show through below a row that is supposed to
+                // be flush with it. a scrolling stack keeps every row at its computed height:
+                // its bottom edge is wherever the content ends, not the frame
+                if(last && !scroll_v)
+                        h = _stack_row_height(c, (int32_t)content.y1 - y + 1);
+                c->rect.y1 = (int16_t)(y + h - 1);
 
                 //   a flush last row also claims the strip beneath it for hit-testing. That
                 // strip is the window's padding and border, and below the root window the safe
@@ -472,7 +575,10 @@ void light_ui_window_layout_stack(struct ui_window *win, uint8_t gap)
                         // top edge is shared with the row above and stays square
                         btn->corners = (last && flush_r > 0) ? LIGHT_DRAW_CORNER_BOTTOM : LIGHT_DRAW_CORNER_NONE;
                 }
-                y = (int16_t)(y + row_h + gap);
+                // advance by THIS row's height: constraints make rows individually sized now,
+                // and stepping by the shared row_h would overlap a row with a taller
+                // predecessor (the non-scroll last row needs no advance; the loop ends)
+                y = (int16_t)(y + h + gap);
         }
         light_ui_invalidate_widget(&win->widget);
 }
@@ -488,6 +594,123 @@ void light_ui_window_set_corner_radius(struct ui_window *win, uint8_t radius)
         if(win->layout == UI_LAYOUT_STACK)
                 light_ui_window_layout_stack(win, win->layout_gap);
         light_ui_invalidate_widget(&win->widget);
+}
+
+// --- scrolling ---
+
+void light_ui_window_set_scroll(struct ui_window *win, uint8_t flags)
+{
+        if(win->scroll == flags)
+                return;
+        win->scroll = flags;
+        //   whether a window scrolls changes how the stack treats rows that do not fit and
+        // whether the last row gets the flush-corner treatment, so a recorded arrangement is
+        // re-applied. The layout pass is also what clamps the offset, which is what puts
+        // content back inside the frame when an axis stops scrolling
+        if(win->layout == UI_LAYOUT_STACK)
+                light_ui_window_layout_stack(win, win->layout_gap);
+        light_ui_invalidate_widget(&win->widget);
+}
+
+//   content extents for a hand-placed (UI_LAYOUT_NONE) window, measured from its children's
+// rects with the current offset added back -- the extent is a property of the content, not of
+// where it happens to be scrolled to. A stack window never comes through here: its layout
+// maintains content_w/h itself, and measuring rects it just placed would say the same thing
+static void _window_measure_content(struct ui_window *win)
+{
+        struct ui_rect vp;
+        _ui_window_viewport(win, &vp);
+        int32_t w = 0, h = 0;
+        for(struct ui_widget *c = win->widget.first_child; c; c = c->next_sibling) {
+                if(!c->visible)
+                        continue;
+                int32_t cw = (int32_t)c->rect.x1 + win->scroll_x - vp.x0 + 1;
+                int32_t ch = (int32_t)c->rect.y1 + win->scroll_y - vp.y0 + 1;
+                if(cw > w) w = cw;
+                if(ch > h) h = ch;
+        }
+        win->content_w = w > INT16_MAX ? INT16_MAX : (int16_t)w;
+        win->content_h = h > INT16_MAX ? INT16_MAX : (int16_t)h;
+}
+
+bool light_ui_window_scroll_to(struct ui_window *win, int16_t x, int16_t y)
+{
+        struct ui_rect vp;
+        _ui_window_viewport(win, &vp);
+        if(_ui_rect_empty(&vp))
+                return false;
+        if(win->layout == UI_LAYOUT_NONE)
+                _window_measure_content(win);
+
+        //   clamped to [0, content - viewport]: the content's far edge never comes past the
+        // viewport's, and an axis without its flag never moves at all. This clamp is the
+        // entire safety argument for scrolling -- everything else is a rect shift
+        int32_t max_sx = (win->scroll & UI_SCROLL_HORIZONTAL)
+                        ? (int32_t)win->content_w - (vp.x1 - vp.x0 + 1) : 0;
+        int32_t max_sy = (win->scroll & UI_SCROLL_VERTICAL)
+                        ? (int32_t)win->content_h - (vp.y1 - vp.y0 + 1) : 0;
+        if(max_sx < 0) max_sx = 0;
+        if(max_sy < 0) max_sy = 0;
+        int16_t nx = x < 0 ? 0 : (x > max_sx ? (int16_t)max_sx : x);
+        int16_t ny = y < 0 ? 0 : (y > max_sy ? (int16_t)max_sy : y);
+
+        //   the shift the content makes is the OPPOSITE of the offset's change: scrolling
+        // down (offset grows) moves the content up through the frame
+        int16_t sx = (int16_t)(win->scroll_x - nx);
+        int16_t sy = (int16_t)(win->scroll_y - ny);
+        if(!sx && !sy)
+                return false;
+        win->scroll_x = nx;
+        win->scroll_y = ny;
+
+        //   rects stay ABSOLUTE: scrolling shifts everything under the window, so painting,
+        // hit-testing and invalidation keep working off one coordinate space, exactly as they
+        // did before scrolling existed
+        for(struct ui_widget *c = win->widget.first_child; c; c = _tree_next(c, &win->widget)) {
+                c->rect.x0 = (int16_t)(c->rect.x0 + sx);
+                c->rect.x1 = (int16_t)(c->rect.x1 + sx);
+                c->rect.y0 = (int16_t)(c->rect.y0 + sy);
+                c->rect.y1 = (int16_t)(c->rect.y1 + sy);
+        }
+        light_ui_invalidate_widget(&win->widget);
+        light_debug("window scrolled to (%d, %d) of (%d, %d)",
+                        win->scroll_x, win->scroll_y, (int)max_sx, (int)max_sy);
+        return true;
+}
+
+bool light_ui_window_scroll_by(struct ui_window *win, int16_t dx, int16_t dy)
+{
+        return light_ui_window_scroll_to(win,
+                        (int16_t)(win->scroll_x + dx), (int16_t)(win->scroll_y + dy));
+}
+
+void light_ui_scroll_into_view(struct ui_widget *w)
+{
+        //   innermost ancestor first, which is what walking up gives naturally: each scroll
+        // moves w itself, and an outer window's decision has to see where the inner one left it
+        for(struct ui_widget *p = w->parent; p; p = p->parent) {
+                if(p->type != UI_WIDGET_WINDOW)
+                        continue;
+                struct ui_window *win = to_ui_window(p);
+                if(!win->scroll)
+                        continue;
+                struct ui_rect vp;
+                _ui_window_viewport(win, &vp);
+                //   as little as brings it in: the far edge first, then the near edge
+                // overrides -- so a widget TALLER than the viewport shows its top, which is
+                // where reading starts
+                int16_t dx = 0, dy = 0;
+                if(w->rect.y1 > vp.y1)
+                        dy = (int16_t)(w->rect.y1 - vp.y1);
+                if(w->rect.y0 - dy < vp.y0)
+                        dy = (int16_t)(w->rect.y0 - vp.y0);
+                if(w->rect.x1 > vp.x1)
+                        dx = (int16_t)(w->rect.x1 - vp.x1);
+                if(w->rect.x0 - dx < vp.x0)
+                        dx = (int16_t)(w->rect.x0 - vp.x0);
+                if(dx || dy)
+                        light_ui_window_scroll_by(win, dx, dy);
+        }
 }
 
 void light_ui_set_safe_inset(struct ui_context *ui, uint8_t inset)
@@ -669,8 +892,14 @@ void light_ui_set_focus(struct ui_context *ui, struct ui_widget *w)
         if(ui->focused)
                 light_ui_invalidate_widget(ui->focused);
         ui->focused = w;
-        if(w)
+        if(w) {
+                //   a focused widget outside its scrolling ancestor's viewport is brought into
+                // it, BEFORE the invalidation so the rect being invalidated is where the widget
+                // actually ended up. This is what makes focus-cycling scroll an overflowing
+                // list on a button rig: the navigation the rig already does is the scrolling
+                light_ui_scroll_into_view(w);
                 light_ui_invalidate_widget(w);
+        }
 }
 
 void light_ui_input_focus_next(struct ui_context *ui)
@@ -744,6 +973,32 @@ static bool _ui_widget_hit(const struct ui_widget *w, int16_t x, int16_t y)
         return _ui_rect_contains(&r, x, y);
 }
 
+//   hit-testing with the same clipping the paint path applies: a widget scrolled out of its
+// window's viewport is exactly as untouchable as it is invisible, and the part of a
+// half-scrolled widget that shows is the only part that responds. `clip` is passed BY VALUE
+// so each subtree narrows its own copy and siblings are unaffected.
+//   last match wins within the walk, for the same reason the old flat walk kept its last
+// match: deeper and later-drawn widgets are visited last, and those are the ones actually on
+// top where they overlap. an invisible widget hides its whole subtree here just as it does
+// when painting -- the two paths must agree about what exists
+static struct ui_widget *_hit_test(struct ui_widget *w, struct ui_rect clip,
+                                int16_t x, int16_t y, struct ui_widget *best)
+{
+        if(!w->visible)
+                return best;
+        if(_is_focusable(w) && _ui_rect_contains(&clip, x, y) && _ui_widget_hit(w, x, y))
+                best = w;
+        if(w->type == UI_WIDGET_WINDOW && to_ui_window(w)->scroll) {
+                struct ui_rect vp;
+                _ui_window_viewport(to_ui_window(w), &vp);
+                if(!_ui_rect_intersect(&clip, &vp))
+                        return best;
+        }
+        for(struct ui_widget *c = w->first_child; c; c = c->next_sibling)
+                best = _hit_test(c, clip, x, y, best);
+        return best;
+}
+
 bool light_ui_input_press_at(struct ui_context *ui, uint16_t x, uint16_t y)
 {
         //   silently ignored while the interface is turning. Mid-rotation the panel is showing
@@ -763,13 +1018,11 @@ bool light_ui_input_press_at(struct ui_context *ui, uint16_t x, uint16_t y)
         y = logical.y;
 
         struct ui_widget *hit = NULL;
-        // last match wins: pre-order means deeper and later-drawn widgets are visited last,
-        // and those are the ones actually on top where they overlap
-        for(struct ui_widget *w = ui->root; w; w = _tree_next(w, ui->root)) {
-                if(!_is_focusable(w))
-                        continue;
-                if(_ui_widget_hit(w, (int16_t)x, (int16_t)y))
-                        hit = w;
+        if(ui->root) {
+                const struct light_draw_context *render = _ui_render(ui);
+                struct ui_rect clip = { 0, 0,
+                        (int16_t)(render->dim_x - 1), (int16_t)(render->dim_y - 1) };
+                hit = _hit_test(ui->root, clip, (int16_t)x, (int16_t)y, NULL);
         }
         if(!hit)
                 return false;
@@ -805,6 +1058,19 @@ void light_ui_widget_set_enabled(struct ui_widget *w, bool enabled)
         light_ui_invalidate_widget(w);
         if(!enabled && w->ui->focused == w)
                 light_ui_input_focus_next(w->ui);
+}
+void light_ui_widget_set_min_size(struct ui_widget *w, int16_t min_w, int16_t min_h)
+{
+        w->min_w = min_w;
+        w->min_h = min_h;
+        // no relayout here: constraints are usually set in a batch before the layout call
+        // that consumes them (light_ui_build() gets this order right), and a caller changing
+        // one afterwards relayouts once, not once per widget
+}
+void light_ui_widget_set_max_size(struct ui_widget *w, int16_t max_w, int16_t max_h)
+{
+        w->max_w = max_w;
+        w->max_h = max_h;
 }
 void light_ui_button_set_label(struct ui_button *btn, const uint8_t *label)
 {

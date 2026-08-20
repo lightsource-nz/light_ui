@@ -87,5 +87,22 @@ static inline bool _ui_rect_contains(const struct ui_rect *r, int16_t x, int16_t
 {
         return x >= r->x0 && x <= r->x1 && y >= r->y0 && y <= r->y1;
 }
+// shrinks *r to its intersection with *clip. returns false when nothing survives, which is
+// the caller's cue to skip whatever *r described
+static inline bool _ui_rect_intersect(struct ui_rect *r, const struct ui_rect *clip)
+{
+        if(r->x0 < clip->x0) r->x0 = clip->x0;
+        if(r->y0 < clip->y0) r->y0 = clip->y0;
+        if(r->x1 > clip->x1) r->x1 = clip->x1;
+        if(r->y1 > clip->y1) r->y1 = clip->y1;
+        return !_ui_rect_empty(r);
+}
+
+//   a scrolling window's VIEWPORT: the area its content shows through, inside the border,
+// padding, header band and corner clearance. This is what painting and hit-testing clip a
+// scrolling window's children to, what the stack layout fills from, and what scroll offsets
+// are clamped against -- one function so the four can never disagree about where content is
+// allowed to be
+extern void _ui_window_viewport(const struct ui_window *win, struct ui_rect *out);
 
 #endif

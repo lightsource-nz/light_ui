@@ -4,16 +4,23 @@
 
 #include <string.h>
 
-// draws `text` at (x, y) truncated to fit both max_width and the canvas, in whatever
+// draws `text` at (x, y) truncated to fit max_width, the canvas, and `clip`, in whatever
 // light_draw's color_fg currently is.
 //
 // light_draw_draw_text() neither clips nor bounds its width -- it walks glyphs off the end of the
 // canvas straight into _set_pixel(), which for anything past the buffer is an out-of-bounds
 // write, not just a cosmetic overflow. so the fit has to be computed here. fonts are
 // fixed-pitch (light_draw_font_t has a single char_width), which makes that arithmetic rather
-// than a measurement pass
+// than a measurement pass.
+//
+// the clip is honoured at GLYPH-ROW granularity, because there is no partial-glyph path: text
+// whose row does not fit the clip vertically, or that starts left of it, is dropped whole
+// rather than half-drawn -- the same all-or-nothing treatment the canvas edges always got. a
+// scrolling window's half-visible row therefore shows its box without its label, which reads
+// as a row arriving rather than one drawn wrong
 static void _draw_text_fitted(struct ui_context *ui, int16_t x, int16_t y,
-                                const uint8_t *text, int16_t max_width)
+                                const uint8_t *text, int16_t max_width,
+                                const struct ui_rect *clip)
 {
         light_draw_context_t *render = _ui_render(ui);
         const light_draw_font_t *font = render->font;
@@ -28,6 +35,16 @@ static void _draw_text_fitted(struct ui_context *ui, int16_t x, int16_t y,
         if(x < 0 || y < 0 || x >= (int16_t)render->dim_x
                         || y + font->char_height > (int16_t)render->dim_y)
                 return;
+        // the same rejections against the clip: the paint path guarantees clip is inside the
+        // canvas, so these are strictly tighter versions of the checks above
+        if(clip) {
+                if(x < clip->x0 || x > clip->x1
+                                || y < clip->y0 || y + font->char_height - 1 > clip->y1)
+                        return;
+                int16_t clip_width = (int16_t)(clip->x1 - x + 1);
+                if(max_width > clip_width)
+                        max_width = clip_width;
+        }
 
         size_t len = strlen((const char *)text);
         size_t fit_widget = (size_t)(max_width > 0 ? max_width : 0) / font->char_width;
@@ -54,10 +71,11 @@ static int16_t _centre_x(const light_draw_font_t *font, int16_t x0, int16_t x1, 
         return (int16_t)(x0 + (avail - used) / 2);
 }
 
-static void _paint_window(struct ui_context *ui, struct ui_window *win)
+static void _paint_window(struct ui_context *ui, struct ui_window *win,
+                        const struct ui_rect *clip)
 {
         struct ui_rect r = win->widget.rect;
-        if(!_ui_clip_to_canvas(ui, &r))
+        if(!_ui_rect_intersect(&r, clip))
                 return;
 
         light_draw_context_t *render = _ui_render(ui);
@@ -93,7 +111,7 @@ static void _paint_window(struct ui_context *ui, struct ui_window *win)
         int16_t tx = r.x0 + indent + inset + 1;
         // the top-RIGHT arc mirrors the top-left one, so the line the title has to fit in is
         // shortened at both ends
-        _draw_text_fitted(ui, tx, ty, win->title, (r.x1 - indent - inset) - tx + 1);
+        _draw_text_fitted(ui, tx, ty, win->title, (r.x1 - indent - inset) - tx + 1, clip);
 
         // the separator sits char_height lower, where the arc has already come most of the
         // way back out -- so it gets its own, much smaller, indent rather than the title's
@@ -106,10 +124,11 @@ static void _paint_window(struct ui_context *ui, struct ui_window *win)
                         (light_draw_point2d) { (uint16_t)(r.x1 - sep_indent - inset), (uint16_t)sep_y }, true);
 }
 
-static void _paint_button(struct ui_context *ui, struct ui_button *btn)
+static void _paint_button(struct ui_context *ui, struct ui_button *btn,
+                        const struct ui_rect *clip)
 {
         struct ui_rect r = btn->widget.rect;
-        if(!_ui_clip_to_canvas(ui, &r))
+        if(!_ui_rect_intersect(&r, clip))
                 return;
 
         light_draw_context_t *render = _ui_render(ui);
@@ -141,7 +160,7 @@ static void _paint_button(struct ui_context *ui, struct ui_button *btn)
                 int16_t ty = (int16_t)(r.y0 + 1 + (inner_h - font->char_height) / 2);
                 if(ty < r.y0 + 1)
                         ty = r.y0 + 1;
-                _draw_text_fitted(ui, tx, ty, btn->label, inner_x1 - inner_x0 + 1);
+                _draw_text_fitted(ui, tx, ty, btn->label, inner_x1 - inner_x0 + 1, clip);
         }
 
         render->color_fg = saved_fg;
@@ -150,36 +169,62 @@ static void _paint_button(struct ui_context *ui, struct ui_button *btn)
         // anything else (greyed text) needs a colour model this 1bpp path doesn't have
 }
 
-static void _paint_label(struct ui_context *ui, struct ui_label *lbl)
+static void _paint_label(struct ui_context *ui, struct ui_label *lbl,
+                        const struct ui_rect *clip)
 {
         struct ui_rect r = lbl->widget.rect;
-        if(!_ui_clip_to_canvas(ui, &r))
+        if(!_ui_rect_intersect(&r, clip))
                 return;
-        _draw_text_fitted(ui, r.x0, r.y0, lbl->text, r.x1 - r.x0 + 1);
+        _draw_text_fitted(ui, r.x0, r.y0, lbl->text, r.x1 - r.x0 + 1, clip);
 }
 
-void _ui_paint_widget(struct ui_context *ui, struct ui_widget *w)
+//   `clip` is passed BY VALUE so each subtree narrows its own copy: a scrolling window's
+// children paint only inside its viewport, and what a half-scrolled widget shows is the
+// intersection -- a box cut off at the viewport edge, exactly as widgets have always been cut
+// off at the canvas edge. the same narrowing happens in ui.c's _hit_test(), and the two must
+// agree: what cannot be seen must not respond
+static void _paint_clipped(struct ui_context *ui, struct ui_widget *w, struct ui_rect clip)
 {
         if(!w->visible)
                 return;
 
         switch(w->type) {
         case UI_WIDGET_WINDOW:
-                _paint_window(ui, to_ui_window(w));
+                _paint_window(ui, to_ui_window(w), &clip);
                 break;
         case UI_WIDGET_BUTTON:
-                _paint_button(ui, to_ui_button(w));
+                _paint_button(ui, to_ui_button(w), &clip);
                 break;
         case UI_WIDGET_LABEL:
-                _paint_label(ui, to_ui_label(w));
+                _paint_label(ui, to_ui_label(w), &clip);
                 break;
         default:
                 light_warn("unknown widget type %d", w->type);
                 break;
         }
 
+        //   a scrolling window confines its children to its viewport. the window's own frame
+        // and title were drawn against the WIDER clip above, which is what keeps the frame
+        // visible while content moves beneath it -- the frame is not content and does not scroll
+        if(w->type == UI_WIDGET_WINDOW && to_ui_window(w)->scroll) {
+                struct ui_rect vp;
+                _ui_window_viewport(to_ui_window(w), &vp);
+                if(!_ui_rect_intersect(&clip, &vp))
+                        return;
+        }
+
         // children after the parent, and in sibling order -- both are "later draws on top",
         // which is what puts a button inside its window's frame rather than under it
         for(struct ui_widget *c = w->first_child; c; c = c->next_sibling)
-                _ui_paint_widget(ui, c);
+                _paint_clipped(ui, c, clip);
+}
+
+void _ui_paint_widget(struct ui_context *ui, struct ui_widget *w)
+{
+        // the walk starts clipped to the canvas, which every narrower clip stays inside --
+        // so the paint functions never need the canvas checks separately
+        const struct light_draw_context *render = _ui_render(ui);
+        struct ui_rect clip = { 0, 0,
+                (int16_t)(render->dim_x - 1), (int16_t)(render->dim_y - 1) };
+        _paint_clipped(ui, w, clip);
 }
