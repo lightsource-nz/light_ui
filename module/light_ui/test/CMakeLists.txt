@@ -31,6 +31,11 @@ set(LIGHT_UI_TEST_CASES
         widget_command_queues_for_cli_task
         build_binds_and_orders
         pages_navigate_and_return
+        render_paints_frame_and_buttons
+        render_clips_rows_to_the_viewport
+        render_full_bleed_and_end_cap_at_stop
+        render_labels_track_scroll_exactly
+        render_title_header
 )
 foreach(_case ${LIGHT_UI_TEST_CASES})
         add_test(NAME light_ui.${_case} COMMAND test_light_ui ${_case})

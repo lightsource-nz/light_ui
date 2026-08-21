@@ -69,6 +69,46 @@ static int16_t inset_of(const struct ui_window *win)
         return (int16_t)(win->padding + (win->border ? 1 : 0));
 }
 
+// --- rendering support: a pixel probe and a synthetic font ---
+
+// 16bpp, so foreground and background are unambiguous per pixel -- the same probe
+// light_draw's suite uses
+static int lit(const light_draw_context_t *ctx, int x, int y)
+{
+        if(x < 0 || y < 0 || x >= ctx->dim_x || y >= ctx->dim_y)
+                return 0;
+        size_t off = ((size_t)y * ctx->phys_dim_x + x) * 2;
+        return ctx->buffer[off] || ctx->buffer[off + 1];
+}
+
+//   a 4x6 font whose every printable glyph is a solid block: labels then render as solid
+// rectangles, which is exactly what a position assertion wants -- no dependence on any real
+// typeface's shapes. glyph rows are MSB-first, so 0xF0 lights the leftmost 4 of 8 bits
+static const uint8_t _block_glyph[6] = { 0xF0, 0xF0, 0xF0, 0xF0, 0xF0, 0xF0 };
+static const uint8_t *_font_glyphs[LIGHT_DRAW_FONT_GLYPH_TABLE_SIZE];
+static const light_draw_font_t _test_font = {
+        .glyphs = (const uint8_t *const *)_font_glyphs,
+        .char_width = 4,
+        .char_height = 6,
+};
+static struct ui_context *make_ui_with_font(void)
+{
+        // every printable except space, which stays NULL so labels get real gaps
+        for(int c = '!'; c <= '~'; c++)
+                _font_glyphs[c] = _block_glyph;
+        struct ui_context *ui = make_ui();
+        light_draw_context_set_font(ui->canvas->render, &_test_font);
+        return ui;
+}
+
+// renders one frame and returns whether a frame actually happened
+static int render_frame(struct ui_context *ui)
+{
+        uint32_t before = light_canvas_frame_count(ui->canvas);
+        light_ui_render(ui);
+        return light_canvas_frame_count(ui->canvas) != before;
+}
+
 // --- stack layout ---
 
 static void test_stack_divides_rows_evenly(void)
@@ -512,6 +552,159 @@ static void test_pages_navigate_and_return(void)
         CHECK(light_ui_current_page(ui) == &_page_one, "override leaked into a later back");
 }
 
+// --- rendering (ui_draw.c) ---
+
+static void test_render_paints_frame_and_buttons(void)
+{
+        struct ui_context *ui = make_ui();
+        struct ui_window *win = make_window(ui, 10, 10, 89, 149);
+        struct ui_button *b1 = light_ui_button_create(ui, &win->widget, (struct ui_rect){0,0,0,0}, NULL, NULL, NULL);
+        struct ui_button *b2 = light_ui_button_create(ui, &win->widget, (struct ui_rect){0,0,0,0}, NULL, NULL, NULL);
+        light_ui_window_layout_stack(win, 2);
+
+        light_ui_invalidate(ui);
+        CHECK(render_frame(ui), "dirty context did not draw a frame");
+
+        light_draw_context_t *r = ui->canvas->render;
+        // the window's border occupies its rect's outermost ring
+        CHECK(lit(r, 10, 80), "window left border not painted");
+        CHECK(lit(r, 50, 10), "window top border not painted");
+        CHECK(!lit(r, 5, 80), "paint escaped the window");
+
+        // the first button took focus at creation and draws FILLED; the second is hollow
+        int cx1 = (b1->widget.rect.x0 + b1->widget.rect.x1) / 2;
+        int cy1 = (b1->widget.rect.y0 + b1->widget.rect.y1) / 2;
+        CHECK(lit(r, cx1, cy1), "focused button not filled");
+        int cy2 = (b2->widget.rect.y0 + b2->widget.rect.y1) / 2;
+        CHECK(lit(r, b2->widget.rect.x0, cy2), "hollow button's border not painted");
+        CHECK(!lit(r, cx1, cy2), "unfocused button's interior filled");
+
+        // rendering clears the dirty flag: with nothing changed, no frame happens
+        CHECK(!render_frame(ui), "clean context drew a frame anyway");
+        light_ui_invalidate_widget(&b2->widget);
+        CHECK(render_frame(ui), "invalidation did not re-arm the frame");
+}
+
+static void test_render_clips_rows_to_the_viewport(void)
+{
+        struct ui_context *ui = make_ui();
+        struct ui_window *win = make_window(ui, 10, 10, 89, 149);
+        light_ui_window_set_scroll(win, UI_SCROLL_VERTICAL);
+        struct ui_button *b[5];
+        for(int i = 0; i < 5; i++) {
+                b[i] = light_ui_button_create(ui, &win->widget, (struct ui_rect){0,0,0,0}, NULL, NULL, NULL);
+                light_ui_widget_set_min_size(&b[i]->widget, 0, 50);
+        }
+        light_ui_window_layout_stack(win, 0);
+        light_ui_window_scroll_by(win, 0, 30);
+
+        light_ui_invalidate(ui);
+        CHECK(render_frame(ui), "no frame drawn");
+        light_draw_context_t *r = ui->canvas->render;
+        int16_t ins = inset_of(win);
+
+        //   the first row's top has scrolled above the viewport: inside the window's top band
+        // (between the frame and the viewport) no row pixel may appear -- what cannot be seen
+        // is not painted -- while just inside the viewport the same row's side border shows
+        CHECK(!lit(r, 10 + ins, 10 + ins - 1), "a scrolled-out row painted into the top band");
+        CHECK(lit(r, 10 + ins, 10 + ins + 5), "the clipped row's visible part missing");
+        // the frame itself is not content and does not scroll
+        CHECK(lit(r, 50, 10), "the frame's top border was scrolled away");
+}
+
+static void test_render_full_bleed_and_end_cap_at_stop(void)
+{
+        struct ui_context *ui = make_ui();
+        struct ui_window *win = make_window(ui, 10, 10, 89, 149);
+        light_ui_window_set_corner_radius(win, 12);
+        light_ui_window_set_scroll(win, UI_SCROLL_VERTICAL);
+        struct ui_button *last = NULL;
+        for(int i = 0; i < 4; i++) {
+                last = light_ui_button_create(ui, &win->widget, (struct ui_rect){0,0,0,0}, NULL, NULL, NULL);
+                light_ui_widget_set_min_size(&last->widget, 0, 60);
+        }
+        light_ui_window_layout_stack(win, 0);
+        light_ui_window_scroll_by(win, 0, 999);
+
+        light_ui_invalidate(ui);
+        CHECK(render_frame(ui), "no frame drawn");
+        light_draw_context_t *r = ui->canvas->render;
+
+        int16_t ins = inset_of(win);
+        int16_t stop = (int16_t)(149 - ins);
+        int16_t cap_r = (int16_t)(12 - ins);
+        CHECK(last->widget.rect.y1 == stop, "list not at its bottom stop");
+        // the last row's bottom edge rests on the flush edge, painted there -- full bleed,
+        // past the plain viewport's corner-cleared bottom
+        CHECK(lit(r, 50, stop), "flush bottom edge not painted at the stop");
+        // its bottom corners take the container's curve: the square-corner pixel is clear,
+        // the edge beyond the arc's reach is drawn
+        CHECK(!lit(r, 10 + ins, stop), "end cap did not round the corner");
+        CHECK(lit(r, 10 + ins + cap_r, stop), "rounded bottom edge missing past the arc");
+        // and nothing paints below the stop except the frame itself
+        CHECK(!lit(r, 50, stop + 1), "content escaped below the scroll stop");
+        CHECK(lit(r, 50, 149), "the frame's bottom border was overpainted");
+}
+
+static void test_render_labels_track_scroll_exactly(void)
+{
+        struct ui_context *ui = make_ui_with_font();
+        struct ui_window *win = make_window(ui, 10, 10, 89, 149);
+        light_ui_window_set_scroll(win, UI_SCROLL_VERTICAL);
+        struct ui_button *b2 = NULL;
+        for(int i = 0; i < 5; i++) {
+                struct ui_button *b = light_ui_button_create(ui, &win->widget, (struct ui_rect){0,0,0,0},
+                                (const uint8_t *)"X", NULL, NULL);
+                light_ui_widget_set_min_size(&b->widget, 0, 50);
+                if(i == 1)
+                        b2 = b;
+        }
+        light_ui_window_layout_stack(win, 0);
+
+        // the second row is unfocused (hollow), so its label's block glyph is the only thing
+        // lit in its interior. position computed the way _paint_button computes it
+        struct ui_rect rr = b2->widget.rect;
+        int tx = (rr.x0 + 1 + rr.x1 - 1 + 1 - _test_font.char_width) / 2;
+        int ty = rr.y0 + 1 + ((rr.y1 - rr.y0 - 1) - _test_font.char_height) / 2;
+
+        light_ui_invalidate(ui);
+        CHECK(render_frame(ui), "no frame drawn");
+        light_draw_context_t *r = ui->canvas->render;
+        CHECK(lit(r, tx + 1, ty + 1), "label glyph not painted where computed");
+
+        //   the regression this pins: a label must move by EXACTLY the scroll delta, never
+        // re-centre against a clamped rect as its row crosses an edge
+        light_ui_window_scroll_by(win, 0, 10);
+        light_ui_invalidate(ui);
+        CHECK(render_frame(ui), "no frame after scroll");
+        CHECK(lit(r, tx + 1, ty + 1 - 10), "label did not move with its row");
+        CHECK(!lit(r, tx + 1, ty + 1), "label ghost at the pre-scroll position");
+}
+
+static void test_render_title_header(void)
+{
+        struct ui_context *ui = make_ui_with_font();
+        struct ui_window *win = light_ui_window_create(ui, NULL,
+                        (struct ui_rect) { 10, 10, 89, 149 }, (const uint8_t *)"T");
+        light_ui_button_create(ui, &win->widget, (struct ui_rect){0,0,0,0}, NULL, NULL, NULL);
+        light_ui_window_layout_stack(win, 0);
+
+        light_ui_invalidate(ui);
+        CHECK(render_frame(ui), "no frame drawn");
+        light_draw_context_t *r = ui->canvas->render;
+
+        // the title sits just inside the frame at the very top...
+        int16_t inset = win->border ? 1 : 0;
+        int tx = 10 + inset + 1;
+        int ty = 10 + inset;
+        CHECK(lit(r, tx + 1, ty + 1), "title glyph not painted in the header");
+        // ...with the separator line one glyph-height below, spanning the width
+        int sep_y = ty + _test_font.char_height;
+        CHECK(lit(r, 30, sep_y) && lit(r, 70, sep_y), "header separator missing");
+        // and the stacked content starts BELOW the header band, not under it
+        CHECK(win->widget.first_child->rect.y0 > sep_y, "content laid out under the header");
+}
+
 // enumerated rather than discovered -- see light_draw's suite for why. KEEP IN SYNC with
 // the CMakeLists.txt list; `--list` prints the names the binary actually has
 static const struct {
@@ -537,6 +730,11 @@ static const struct {
         { "widget_command_queues_for_cli_task",  test_widget_command_queues_for_cli_task },
         { "build_binds_and_orders",              test_build_binds_and_orders },
         { "pages_navigate_and_return",           test_pages_navigate_and_return },
+        { "render_paints_frame_and_buttons",     test_render_paints_frame_and_buttons },
+        { "render_clips_rows_to_the_viewport",   test_render_clips_rows_to_the_viewport },
+        { "render_full_bleed_and_end_cap_at_stop", test_render_full_bleed_and_end_cap_at_stop },
+        { "render_labels_track_scroll_exactly",  test_render_labels_track_scroll_exactly },
+        { "render_title_header",                 test_render_title_header },
 };
 #define TEST_CASE_COUNT (sizeof(test_cases) / sizeof(*test_cases))
 

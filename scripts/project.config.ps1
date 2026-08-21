@@ -53,10 +53,11 @@
         # plain Linux build. What this measures is what the group's host suite reaches: the
         # widget toolkit's layout/scroll/focus/touch logic (test_light_ui), the canvas's
         # region and pacing rules (test_light_canvas), light_audio, and the light_draw and
-        # framework suites that register through the standalone build. ui_draw.c is the one
-        # 0% file with a suite beside it: nothing renders frames yet -- the paint walk is the
-        # next surface worth a test. The board drivers and hw wiring are target-only and will
-        # never appear
+        # framework suites that register through the standalone build. The paint walk
+        # (ui_draw.c) is measured through real rendered frames against a zero-display canvas
+        # and a synthetic block font, pixel-asserted the way light_draw's own suite works.
+        # The board drivers and hw wiring are target-only and will never appear; the
+        # module.c load hooks are 0% by construction, since test binaries load no modules
         Coverage = @{
                 Objects     = 'auto'
                 IgnoreRegex = '(/lib/|/usr/|sanitizers/|_deps/|/freetype/|/jansson/)'
