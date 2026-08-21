@@ -57,17 +57,23 @@ if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
         # to be called, and only the group has the marker
         project(light_ui C CXX ASM)
 
-        # tests are registered by modules that carry them, gated on a host build; enabling at
-        # the root is what makes `ctest` in the host tree see them (see light_display's root
-        # for the full reasoning)
-        include(CTest)
-
         add_subdirectory(${LIGHT_PATH} light_framework)
 
         # the display group: light_canvas presents through light_display, light_draw renders
         # the widgets, light_backlight is what the demos dim on idle
         light_resolve_project(LIGHT_DISPLAY light_display MARKER module/light_display/CMakeLists.txt)
         add_subdirectory(${LIGHT_DISPLAY_PATH} light_display_group)
+endif()
+
+#   OUTSIDE the standalone block, exactly as light_display's root does it, and the placement
+# is load-bearing: enable_testing() only takes effect for directories processed AFTER it, so a
+# consumer whose own enable_testing() comes later in its file (crossfire's does) would process
+# this group with testing off -- the test BINARIES still build, but no CTestTestfiles are
+# generated and ctest silently never sees them. Self-enabling here is what makes the group's
+# suites appear in every consumer's host tree; BUILD_TESTING still lets a consumer switch them
+# off deliberately
+if(LIGHT_PLATFORM STREQUAL HOST)
+        include(CTest)
 endif()
 
 #   EVERY library module, unconditionally -- they are INTERFACE libraries that compile nothing
